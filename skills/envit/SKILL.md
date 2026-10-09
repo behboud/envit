@@ -69,9 +69,11 @@ options becomes an object:
 
 Per-entry keys: `source` (required), `name`, `ref`, `update`
 (`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), `history` (`"full"`).
-Skills sources also take `path` (subdirectory in a monorepo) and
-`modelInvocable` (`true`/`false`): whether the model may invoke the
-skill on its own. Overrides the author's controls for both Claude
+Skills are discovered at the source root, under `skills/`, and under
+`plugins/<plugin>/skills/`. Set `path` to scope discovery to another
+subdirectory in a monorepo. Skill sources also take `modelInvocable`
+(`true`/`false`): whether the model may invoke the skill on its own.
+Overrides the author's controls for both Claude
 (`disable-model-invocation`) and Codex (`allow_implicit_invocation`).
 Applies per source, or per skill via
 `{ "name": ..., "modelInvocable": ... }` in a pick list.

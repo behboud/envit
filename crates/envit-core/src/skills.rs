@@ -276,12 +276,11 @@ pub fn resolve_source(
     Ok((url, commit, checkout, tag))
 }
 
-/// Find skills in a checkout: root `SKILL.md`, or directories under
-/// `skills/` that contain a `SKILL.md` — up to two levels deep, because
-/// real repos group skills in category directories
-/// (`skills/productivity/grill-me/SKILL.md`). The frontmatter `name` is
-/// the skill's identity; real-world repos (including
-/// vercel-labs/agent-skills itself) don't always match dir names to it.
+/// Find skills in a checkout: root `SKILL.md`, directories under `skills/`,
+/// and under each `plugins/<plugin>/skills/`. Skill collections may group
+/// skills in category directories (`skills/productivity/grill-me/SKILL.md`)
+/// up to two levels deep. The frontmatter `name` is the skill's identity;
+/// repo directory names do not always match it.
 fn discover(checkout: &Path) -> Result<Vec<Found>, Error> {
     let mut found = Vec::new();
     let root_md = checkout.join("SKILL.md");
@@ -292,6 +291,22 @@ fn discover(checkout: &Path) -> Result<Vec<Found>, Error> {
     let skills_dir = checkout.join("skills");
     if skills_dir.is_dir() {
         collect_skills(&skills_dir, 2, &mut found)?;
+    }
+
+    let plugins_dir = checkout.join("plugins");
+    if plugins_dir.is_dir() {
+        let mut plugins: Vec<_> = std::fs::read_dir(&plugins_dir)?.flatten().collect();
+        plugins.sort_by_key(|entry| entry.file_name());
+        for entry in plugins {
+            let plugin = entry.path();
+            if !plugin.is_dir() {
+                continue;
+            }
+            let plugin_skills = plugin.join("skills");
+            if plugin_skills.is_dir() {
+                collect_skills(&plugin_skills, 2, &mut found)?;
+            }
+        }
     }
     Ok(found)
 }
