@@ -143,7 +143,11 @@ pub fn extract_checkout(
         .map_err(|e| Error::Git(e.to_string()))?;
     let options = gix::worktree::state::checkout::Options {
         fs: gix::fs::Capabilities::probe(dest),
-        ..Default::default()
+        ..gix::worktree::state::checkout::Options::new(gix::filter::plumbing::Pipeline::new(
+            Default::default(),
+            index.object_hash(),
+            Default::default(),
+        ))
     };
     let outcome = gix::worktree::state::checkout(
         &mut index,

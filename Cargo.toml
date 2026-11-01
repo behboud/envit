@@ -13,21 +13,20 @@ authors = ["Michael Ramos"]
 # (gix, etc. — added when first used, not before).
 [workspace.dependencies]
 envit-core = { path = "crates/envit-core", version = "0.1.0" }
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
-thiserror = "2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+thiserror = "2.0.21"
 # Git engine (PRD §20 D2): gix baseline, tightly feature-gated — every
 # feature here must be justified by a call site.
-gix = { version = "0.86", default-features = false, features = [
+gix = { version = "0.90.0", default-features = false, features = [
   "blocking-network-client",                 # fetch over git/file transports
   "blocking-http-transport-curl-rustls",     # https; curl backend per D4 (reqwest backend is experimental, no proxy support)
   "worktree-mutation",                       # tree -> directory extraction
-  "parallel",                                # multicore pack decode + checkout
   "sha1",                                    # object hashing (not on by default sans defaults)
-  "max-performance-safe",                    # zlib + multicore without unsafe/C deps
+  "max-performance",                         # parallelism + pack caches, without a C toolchain
 ] }
-clap = { version = "4", features = ["derive"] }
-tempfile = "3"
+clap = { version = "4.6.7", features = ["derive"] }
+tempfile = "3.27.0"
 
 [profile.release]
 lto = "fat"            # whole-program LTO: smaller + faster; we ship rarely, compile time is fine
