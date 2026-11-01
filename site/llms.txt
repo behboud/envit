@@ -87,9 +87,11 @@ Skills are an object keyed by source repo:
 ```
 
 Skill values: one skill name, a list of names, `"*"` for every skill the
-repo ships, or an object with `pick` plus options. Skill source keys:
-`pick`, `ref`, `path` (a subdirectory, for monorepos), `update`, `ttl`,
-`modelInvocable`. A pick list item can be an object:
+repo ships, or an object with `pick` plus options. envit discovers skills
+at the source root, under `skills/`, and under
+`plugins/<plugin>/skills/`. Skill source keys: `pick`, `ref`, `path` (a
+subdirectory, for monorepos), `update`, `ttl`, `modelInvocable`. A pick
+list item can be an object:
 `{ "name": "grill-me", "modelInvocable": false }`.
 
 Top-level keys: `repos`, `skills`, `agentsMd` (set `false` to stop envit

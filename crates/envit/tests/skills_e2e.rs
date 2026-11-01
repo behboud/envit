@@ -189,6 +189,39 @@ fn nested_categories_and_monorepo_path() {
 }
 
 #[test]
+fn discovers_skills_in_nested_plugin_layout() {
+    let upstream = tempfile::tempdir().unwrap();
+    git(upstream.path(), &["init", "-b", "main", "."]);
+    let d = upstream.path().join("plugins/show-me/skills/show-me");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("SKILL.md"),
+        "---\nname: show-me\ndescription: nested plugin skill\n---\nNested skill body.\n",
+    )
+    .unwrap();
+    git(upstream.path(), &["add", "."]);
+    git(upstream.path(), &["commit", "-m", "add nested skill"]);
+    let url = format!("file://{}", upstream.path().display());
+
+    let store = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir().unwrap();
+    std::fs::write(
+        proj.path().join("envit.json"),
+        format!("{{ \"skills\": {{ \"{url}\": [\"show-me\"] }} }}"),
+    )
+    .unwrap();
+
+    let out = ok(&envit(proj.path(), store.path(), &["sync"]));
+    assert!(out.contains("skill    show-me"), "{out}");
+    assert!(
+        std::fs::read_to_string(proj.path().join(".agents/skills/show-me/SKILL.md"))
+            .unwrap()
+            .contains("Nested skill body"),
+        "the nested skill directory is linked"
+    );
+}
+
+#[test]
 fn invocation_override_beats_author_settings() {
     let upstream = tempfile::tempdir().unwrap();
     git(upstream.path(), &["init", "-b", "main", "."]);
