@@ -26,6 +26,7 @@ fn lockfile_roundtrip_and_canonical_bytes() {
     let mut a = Lockfile::new();
     a.set(locked("zlib", "c0ffee00"));
     a.set(locked("effect", "3f2a9c1e"));
+    a.set_agent_source(locked("agent-source", "a11ce000"));
     a.save(root).unwrap();
     let bytes_a = std::fs::read_to_string(root.join("envit.lock.json")).unwrap();
 
@@ -33,6 +34,7 @@ fn lockfile_roundtrip_and_canonical_bytes() {
     let mut b = Lockfile::new();
     b.set(locked("effect", "3f2a9c1e"));
     b.set(locked("zlib", "c0ffee00"));
+    b.set_agent_source(locked("agent-source", "a11ce000"));
     b.save(root).unwrap();
     let bytes_b = std::fs::read_to_string(root.join("envit.lock.json")).unwrap();
     assert_eq!(bytes_a, bytes_b);
@@ -43,15 +45,21 @@ fn lockfile_roundtrip_and_canonical_bytes() {
     let loaded = Lockfile::load(root).unwrap().unwrap();
     assert_eq!(loaded.get("effect").unwrap().commit, "3f2a9c1e");
     assert_eq!(loaded.repos().len(), 2);
+    assert_eq!(
+        loaded.get_agent_source("agent-source").unwrap().commit,
+        "a11ce000"
+    );
 
     // Upsert replaces; retain prunes removed repos.
     let mut l = loaded;
     l.set(locked("effect", "deadbeef"));
     l.retain_named(&["effect".to_string()]);
     l.save(root).unwrap();
-    let l = Lockfile::load(root).unwrap().unwrap();
+    let mut l = Lockfile::load(root).unwrap().unwrap();
     assert_eq!(l.repos().len(), 1);
     assert_eq!(l.get("effect").unwrap().commit, "deadbeef");
+    l.retain_agent_sources(&[]);
+    assert!(l.agent_sources().is_empty());
 
     // A corrupt entry errors loudly, not silently.
     std::fs::write(
@@ -68,12 +76,16 @@ fn store_paths_are_deterministic_and_shared() {
 
     // Bare repo: one per remote.
     assert_eq!(
-        store.bare_dir("https://github.com/tokio-rs/tokio.git").unwrap(),
+        store
+            .bare_dir("https://github.com/tokio-rs/tokio.git")
+            .unwrap(),
         std::path::Path::new("/tmp/fake-store/store/git/github.com/tokio-rs/tokio.git")
     );
     // Nested GitLab groups keep their full path.
     assert_eq!(
-        store.bare_dir("https://gitlab.com/group/sub/repo.git").unwrap(),
+        store
+            .bare_dir("https://gitlab.com/group/sub/repo.git")
+            .unwrap(),
         std::path::Path::new("/tmp/fake-store/store/git/gitlab.com/group/sub/repo.git")
     );
 
@@ -126,7 +138,10 @@ fn project_registry_is_idempotent() {
     let p2 = tempfile::tempdir().unwrap();
 
     assert!(store.register_project(p1.path()).unwrap());
-    assert!(!store.register_project(p1.path()).unwrap(), "second add is a no-op");
+    assert!(
+        !store.register_project(p1.path()).unwrap(),
+        "second add is a no-op"
+    );
     assert!(store.register_project(p2.path()).unwrap());
 
     let projects = store.projects().unwrap();

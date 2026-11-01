@@ -8,9 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{ident, source, Error};
+use crate::{Error, ident, source};
 
 pub struct Manifest {
     doc: Value,
@@ -77,6 +77,86 @@ pub struct SkillEntry {
     pub ttl: Option<std::time::Duration>,
 }
 
+/// A harness that can discover an installed project agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AgentTarget {
+    Claude,
+    Codex,
+    Pi,
+    OpenCode,
+}
+
+impl AgentTarget {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            ident::AGENT_TARGET_CLAUDE => Some(Self::Claude),
+            ident::AGENT_TARGET_CODEX => Some(Self::Codex),
+            ident::AGENT_TARGET_PI => Some(Self::Pi),
+            ident::AGENT_TARGET_OPENCODE => Some(Self::OpenCode),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => ident::AGENT_TARGET_CLAUDE,
+            Self::Codex => ident::AGENT_TARGET_CODEX,
+            Self::Pi => ident::AGENT_TARGET_PI,
+            Self::OpenCode => ident::AGENT_TARGET_OPENCODE,
+        }
+    }
+
+    pub const fn all() -> &'static [Self] {
+        &[Self::Claude, Self::Codex, Self::Pi, Self::OpenCode]
+    }
+}
+
+/// Whether agent definitions are envit's portable format or host-native files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFormat {
+    Portable,
+    Native,
+}
+
+impl AgentFormat {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            ident::PORTABLE_AGENT_FORMAT => Some(Self::Portable),
+            "native" => Some(Self::Native),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Portable => ident::PORTABLE_AGENT_FORMAT,
+            Self::Native => "native",
+        }
+    }
+}
+
+/// Which agents a source entry selects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentPick {
+    All,
+    Named(Vec<String>),
+}
+
+/// One `agents` entry: source, selected definitions, source format and targets.
+#[derive(Debug, Clone)]
+pub struct AgentEntry {
+    pub source: String,
+    pub pick: AgentPick,
+    pub format: AgentFormat,
+    pub targets: Vec<AgentTarget>,
+    pub git_ref: Option<String>,
+    /// Subdirectory of the source repo containing the definitions.
+    pub path: Option<String>,
+    pub frozen: bool,
+    pub manual: bool,
+    pub ttl: Option<std::time::Duration>,
+}
+
 /// Input for `add_repo`. `name` defaults to the repo name from the source.
 pub struct NewRepo<'a> {
     pub source: &'a str,
@@ -113,7 +193,9 @@ impl Manifest {
         })?;
         let doc: Value = serde_json::from_str(&text)?;
         if !doc.is_object() {
-            return Err(Error::ManifestShape("top level must be a JSON object".into()));
+            return Err(Error::ManifestShape(
+                "top level must be a JSON object".into(),
+            ));
         }
         Ok(Self { doc, path })
     }
@@ -124,7 +206,10 @@ impl Manifest {
 
     /// `"agentsMd": false` disables the note envit keeps in AGENTS.md / CLAUDE.md.
     pub fn agents_md_enabled(&self) -> bool {
-        self.doc.get("agentsMd").and_then(Value::as_bool).unwrap_or(true)
+        self.doc
+            .get("agentsMd")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
     }
 
     pub fn repo_names(&self) -> Vec<String> {
@@ -161,7 +246,10 @@ impl Manifest {
                 },
                 Value::String(s) => SkillEntry {
                     source,
-                    pick: Pick::Named(vec![PickItem { name: s.clone(), invocation: None }]),
+                    pick: Pick::Named(vec![PickItem {
+                        name: s.clone(),
+                        invocation: None,
+                    }]),
                     git_ref: None,
                     path: None,
                     invocation: None,
@@ -182,10 +270,13 @@ impl Manifest {
                 Value::Object(o) => {
                     let pick = match o.get("pick") {
                         Some(Value::String(s)) if s == "*" => Pick::All,
-                        Some(Value::String(s)) => {
-                            Pick::Named(vec![PickItem { name: s.clone(), invocation: None }])
+                        Some(Value::String(s)) => Pick::Named(vec![PickItem {
+                            name: s.clone(),
+                            invocation: None,
+                        }]),
+                        Some(Value::Array(a)) => {
+                            Pick::Named(a.iter().filter_map(pick_item).collect())
                         }
-                        Some(Value::Array(a)) => Pick::Named(a.iter().filter_map(pick_item).collect()),
                         _ => Pick::All,
                     };
                     let upd = o.get("update").and_then(Value::as_str);
@@ -205,6 +296,125 @@ impl Manifest {
             out.push(entry);
         }
         out
+    }
+
+    /// All declared agent sources. Agent entries require explicit format,
+    /// selected names, and targets because installing them activates them.
+    pub fn agent_entries(&self) -> Result<Vec<AgentEntry>, Error> {
+        let Some(value) = self.doc.get("agents") else {
+            return Ok(Vec::new());
+        };
+        let Some(obj) = value.as_object() else {
+            return Err(Error::ManifestShape(
+                "'agents' must be an object keyed by source".into(),
+            ));
+        };
+        let mut out = Vec::new();
+        for (src, value) in obj {
+            source::expand(src)?;
+            let Some(o) = value.as_object() else {
+                return Err(Error::ManifestShape(format!(
+                    "'agents.{src}' must be an object with pick, format, and targets"
+                )));
+            };
+            for key in o.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "pick" | "format" | "targets" | "path" | "ref" | "update" | "ttl"
+                ) {
+                    return Err(Error::ManifestShape(format!(
+                        "unknown field 'agents.{src}.{key}'"
+                    )));
+                }
+            }
+            let pick = o
+                .get("pick")
+                .ok_or_else(|| Error::ManifestShape(format!("'agents.{src}.pick' is required")))
+                .and_then(|v| parse_agent_pick(v, src))?;
+            let format = o
+                .get("format")
+                .and_then(Value::as_str)
+                .and_then(AgentFormat::parse)
+                .ok_or_else(|| {
+                    Error::ManifestShape(format!(
+                        "'agents.{src}.format' must be '{}' or 'native'",
+                        ident::PORTABLE_AGENT_FORMAT
+                    ))
+                })?;
+            let targets = parse_agent_targets(o.get("targets"), src)?;
+            let update = match o.get("update") {
+                None => None,
+                Some(Value::String(update)) => Some(update.as_str()),
+                Some(_) => {
+                    return Err(Error::ManifestShape(format!(
+                        "'agents.{src}.update' must be a string"
+                    )));
+                }
+            };
+            if update.is_some_and(|u| !matches!(u, "auto" | "manual" | "frozen")) {
+                return Err(Error::ManifestShape(format!(
+                    "'agents.{src}.update' must be 'auto', 'manual', or 'frozen'"
+                )));
+            }
+            let ttl = match o.get("ttl") {
+                None => None,
+                Some(Value::String(value)) => Some(parse_ttl(value).ok_or_else(|| {
+                    Error::ManifestShape(format!("'agents.{src}.ttl' is not a valid duration"))
+                })?),
+                Some(_) => {
+                    return Err(Error::ManifestShape(format!(
+                        "'agents.{src}.ttl' must be a duration string"
+                    )));
+                }
+            };
+            let path = match o.get("path") {
+                None => None,
+                Some(Value::String(path)) => {
+                    let path_components = Path::new(path);
+                    if path_components.is_absolute()
+                        || path_components.components().any(|component| {
+                            matches!(
+                                component,
+                                std::path::Component::ParentDir
+                                    | std::path::Component::RootDir
+                                    | std::path::Component::Prefix(_)
+                            )
+                        })
+                    {
+                        return Err(Error::ManifestShape(format!(
+                            "'agents.{src}.path' must stay inside the source checkout"
+                        )));
+                    }
+                    Some(path.clone())
+                }
+                Some(_) => {
+                    return Err(Error::ManifestShape(format!(
+                        "'agents.{src}.path' must be a string"
+                    )));
+                }
+            };
+            let git_ref = match o.get("ref") {
+                None => None,
+                Some(Value::String(r)) => Some(r.clone()),
+                Some(_) => {
+                    return Err(Error::ManifestShape(format!(
+                        "'agents.{src}.ref' must be a string"
+                    )));
+                }
+            };
+            out.push(AgentEntry {
+                source: src.clone(),
+                pick,
+                format,
+                targets,
+                git_ref,
+                path,
+                frozen: update == Some("frozen"),
+                manual: update == Some("manual"),
+                ttl,
+            });
+        }
+        Ok(out)
     }
 
     /// Append a repo entry. A bare source stays a plain string; options make
@@ -244,9 +454,9 @@ impl Manifest {
             .expect("validated at load")
             .entry("repos")
             .or_insert_with(|| Value::Array(Vec::new()));
-        let arr = repos.as_array_mut().ok_or_else(|| {
-            Error::ManifestShape("'repos' exists but is not an array".into())
-        })?;
+        let arr = repos
+            .as_array_mut()
+            .ok_or_else(|| Error::ManifestShape("'repos' exists but is not an array".into()))?;
         arr.push(value);
         Ok(name)
     }
@@ -275,9 +485,17 @@ impl Manifest {
                 }
                 o.clone()
             }
-            _ => return Err(Error::ManifestShape("repo entry must be a string or object".into())),
+            _ => {
+                return Err(Error::ManifestShape(
+                    "repo entry must be a string or object".into(),
+                ));
+            }
         };
-        let tracked = o.get("ref").and_then(Value::as_str).unwrap_or("HEAD").to_string();
+        let tracked = o
+            .get("ref")
+            .and_then(Value::as_str)
+            .unwrap_or("HEAD")
+            .to_string();
         o.insert("tracks".into(), json!(tracked));
         o.insert("ref".into(), json!(commit));
         o.insert("update".into(), json!("frozen"));
@@ -340,6 +558,71 @@ impl Manifest {
     }
 }
 
+fn parse_agent_pick(value: &Value, source: &str) -> Result<AgentPick, Error> {
+    match value {
+        Value::String(name) if name == "*" => Ok(AgentPick::All),
+        Value::String(name) if !name.is_empty() => Ok(AgentPick::Named(vec![name.clone()])),
+        Value::Array(items) => {
+            let mut names = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(name) = item.as_str().filter(|name| !name.is_empty()) else {
+                    return Err(Error::ManifestShape(format!(
+                        "'agents.{source}.pick' must contain only non-empty names"
+                    )));
+                };
+                if names.iter().any(|existing| existing == name) {
+                    return Err(Error::ManifestShape(format!(
+                        "duplicate agent name '{name}' in 'agents.{source}.pick'"
+                    )));
+                }
+                names.push(name.to_string());
+            }
+            if names.is_empty() {
+                return Err(Error::ManifestShape(format!(
+                    "'agents.{source}.pick' must select at least one agent"
+                )));
+            }
+            Ok(AgentPick::Named(names))
+        }
+        _ => Err(Error::ManifestShape(format!(
+            "'agents.{source}.pick' must be '*', a name, or an array of names"
+        ))),
+    }
+}
+
+fn parse_agent_targets(value: Option<&Value>, source: &str) -> Result<Vec<AgentTarget>, Error> {
+    let Some(items) = value.and_then(Value::as_array) else {
+        return Err(Error::ManifestShape(format!(
+            "'agents.{source}.targets' must be an array"
+        )));
+    };
+    if items.is_empty() {
+        return Err(Error::ManifestShape(format!(
+            "'agents.{source}.targets' must select at least one harness"
+        )));
+    }
+    let mut targets = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(name) = item.as_str() else {
+            return Err(Error::ManifestShape(format!(
+                "'agents.{source}.targets' must contain only target names"
+            )));
+        };
+        let Some(target) = AgentTarget::parse(name) else {
+            return Err(Error::ManifestShape(format!(
+                "unknown agent target '{name}' in 'agents.{source}.targets'"
+            )));
+        };
+        if targets.contains(&target) {
+            return Err(Error::ManifestShape(format!(
+                "duplicate agent target '{name}' in 'agents.{source}.targets'"
+            )));
+        }
+        targets.push(target);
+    }
+    Ok(targets)
+}
+
 /// Parse one item of the `repos` array: a bare source string, or an object
 /// with options.
 fn entry_from_value(v: &Value) -> Option<RepoEntry> {
@@ -368,7 +651,12 @@ fn entry_from_value(v: &Value) -> Option<RepoEntry> {
                 sparse: o
                     .get("sparse")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 history_full: o.get("history").and_then(Value::as_str) == Some("full"),
                 frozen: upd == Some("frozen"),
@@ -384,7 +672,10 @@ fn entry_from_value(v: &Value) -> Option<RepoEntry> {
 /// One pick-list item: `"name"` or `{ "name": ..., "invocation": ... }`.
 fn pick_item(v: &Value) -> Option<PickItem> {
     match v {
-        Value::String(s) => Some(PickItem { name: s.clone(), invocation: None }),
+        Value::String(s) => Some(PickItem {
+            name: s.clone(),
+            invocation: None,
+        }),
         Value::Object(o) => Some(PickItem {
             name: o.get("name")?.as_str()?.to_string(),
             invocation: parse_invocation(o.get("modelInvocable")),
@@ -392,4 +683,3 @@ fn pick_item(v: &Value) -> Option<PickItem> {
         _ => None,
     }
 }
-

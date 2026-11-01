@@ -17,6 +17,7 @@
 
 mod error;
 
+pub mod agents;
 pub mod gc;
 pub mod git;
 pub mod ident;

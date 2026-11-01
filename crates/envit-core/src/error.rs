@@ -41,7 +41,9 @@ pub enum Error {
     #[error("{} exists and was not installed by envit: remove it, or drop that entry from envit.json, then run `envit sync` again", .0.display())]
     LinkObstructed(std::path::PathBuf),
 
-    #[error("--frozen: repo '{0}' is not in the lockfile (or its manifest entry changed); run `envit sync` without --frozen to update the lock")]
+    #[error(
+        "--frozen: repo '{0}' is not in the lockfile (or its manifest entry changed); run `envit sync` without --frozen to update the lock"
+    )]
     FrozenDrift(String),
 
     #[error("--offline: repo '{0}' is not available locally")]
@@ -57,14 +59,48 @@ pub enum Error {
     NeverSynced(String),
 
     #[error("skill '{skill}' not found in {from} (available: {})", available.join(", "))]
-    SkillNotFound { skill: String, from: String, available: Vec<String> },
-
+    SkillNotFound {
+        skill: String,
+        from: String,
+        available: Vec<String>,
+    },
 
     #[error("no valid SKILL.md frontmatter (missing 'name') in {}", .0.display())]
     SkillInvalid(std::path::PathBuf),
 
+    #[error("agent '{agent}' not found in {from} (available: {})", available.join(", "))]
+    AgentNotFound {
+        agent: String,
+        from: String,
+        available: Vec<String>,
+    },
+
+    #[error("invalid agent definition in {}: {reason}", .path.display())]
+    AgentInvalid {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
+    #[error("agent '{agent}' from {from} has no {target} definition (expected {expected})")]
+    AgentTargetMissing {
+        agent: String,
+        from: String,
+        target: String,
+        expected: String,
+    },
+
+    #[error("agent '{agent}' from {from} conflicts with another {target} agent")]
+    AgentDuplicate {
+        agent: String,
+        from: String,
+        target: String,
+    },
+
     #[error("the global manifest is skills-only — repos are project-scope (remove `repos` from {})", .0.display())]
     GlobalRepos(std::path::PathBuf),
+
+    #[error("the global manifest is skills-only — agents are project-scope (remove `agents` from {})", .0.display())]
+    GlobalAgents(std::path::PathBuf),
 
     #[error("no global manifest — create one with `envit init -g` (it lives at {})", .0.display())]
     NoGlobalManifest(std::path::PathBuf),

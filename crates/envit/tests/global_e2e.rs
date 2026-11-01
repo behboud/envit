@@ -15,7 +15,11 @@ fn envit(cwd: &Path, home: &Path, args: &[&str]) -> Output {
 }
 
 fn ok(out: &Output) -> String {
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -29,7 +33,11 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_EMAIL", "t@t")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
@@ -69,13 +77,19 @@ fn global_skills_lifecycle() {
             .unwrap()
             .contains("Body alpha v1")
     );
-    assert!(home.path().join(".claude/skills/alpha").exists(), "claude fan-out at home");
+    assert!(
+        home.path().join(".claude/skills/alpha").exists(),
+        "claude fan-out at home"
+    );
 
     // A project sync piggybacks global, clearly labeled.
     let proj = tempfile::tempdir().unwrap();
     ok(&envit(proj.path(), home.path(), &["init"]));
     let out = ok(&envit(proj.path(), home.path(), &["sync"]));
-    assert!(out.contains("global   alpha"), "project sync includes labeled global: {out}");
+    assert!(
+        out.contains("global   alpha"),
+        "project sync includes labeled global: {out}"
+    );
 
     // Plain update is project-scoped: upstream moves, global does NOT.
     std::fs::write(
@@ -104,7 +118,10 @@ fn global_skills_lifecycle() {
 
     // skills lists the global scope, labeled.
     let out = ok(&envit(proj.path(), home.path(), &["skills"]));
-    assert!(out.contains("global   ") && out.contains("alpha") || out.contains("global"), "{out}");
+    assert!(
+        out.contains("global   ") && out.contains("alpha") || out.contains("global"),
+        "{out}"
+    );
 
     // Repos in the global manifest: loud, specific error.
     std::fs::write(
@@ -114,10 +131,43 @@ fn global_skills_lifecycle() {
     .unwrap();
     let out = envit(nowhere.path(), home.path(), &["sync", "-g"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("skills-only"), "{:?}", out);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("skills-only"),
+        "{:?}",
+        out
+    );
+
+    // Agents are project-scope and a global sync refuses before touching home agent files.
+    std::fs::create_dir_all(home.path().join(".claude/agents")).unwrap();
+    std::fs::write(home.path().join(".claude/agents/manual.md"), "user-owned\n").unwrap();
+    std::fs::write(
+        home.path().join(".envit/envit.json"),
+        format!(
+            "{{\"agents\":{{\"{url}\":{{\"path\":\"agents\",\"pick\":[\"reviewer\"],\"format\":\"native\",\"targets\":[\"claude\"]}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    let out = envit(nowhere.path(), home.path(), &["sync", "-g"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("agents are project-scope"),
+        "{:?}",
+        out
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join(".claude/agents/manual.md")).unwrap(),
+        "user-owned\n"
+    );
 
     // Removing the skill prunes the home links.
-    std::fs::write(home.path().join(".envit/envit.json"), "{ \"skills\": {} }\n").unwrap();
+    std::fs::write(
+        home.path().join(".envit/envit.json"),
+        "{ \"skills\": {} }\n",
+    )
+    .unwrap();
     ok(&envit(nowhere.path(), home.path(), &["sync", "-g"]));
-    assert!(!home.path().join(".agents/skills/alpha").exists(), "global skill pruned");
+    assert!(
+        !home.path().join(".agents/skills/alpha").exists(),
+        "global skill pruned"
+    );
 }

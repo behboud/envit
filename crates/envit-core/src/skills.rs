@@ -8,11 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::lockfile::LockedRepo;
 use crate::manifest::{Invocation, Pick, SkillEntry};
-use crate::store::Store;
 use crate::sync::SyncOptions;
-use crate::{git, link, source, Error};
+use crate::{Error, link};
 
 /// Cross-client canonical project dir (agentskills.io client convention).
 pub const CANONICAL_DIR: &str = ".agents/skills";
@@ -59,13 +57,13 @@ pub fn materialize_source(
         Pick::Named(items) => {
             let mut sel = Vec::new();
             for want in items {
-                let found =
-                    available.iter().find(|f| f.name == want.name).ok_or_else(|| {
-                        Error::SkillNotFound {
-                            skill: want.name.clone(),
-                            from: entry.source.clone(),
-                            available: available.iter().map(|f| f.name.clone()).collect(),
-                        }
+                let found = available
+                    .iter()
+                    .find(|f| f.name == want.name)
+                    .ok_or_else(|| Error::SkillNotFound {
+                        skill: want.name.clone(),
+                        from: entry.source.clone(),
+                        available: available.iter().map(|f| f.name.clone()).collect(),
                     })?;
                 sel.push((found, want.invocation.or(entry.invocation)));
             }
@@ -113,7 +111,11 @@ fn materialize_patched(
 ) -> Result<(), Error> {
     let key = format!(
         "{commit}+invocation:{}",
-        if mode == Invocation::Explicit { "explicit" } else { "auto" }
+        if mode == Invocation::Explicit {
+            "explicit"
+        } else {
+            "auto"
+        }
     );
     link::materialize_copy(canonical, skill_dir, &key)?;
     if link::copy_was_fresh(canonical, &key) {
@@ -145,7 +147,11 @@ fn write_over(path: &Path, content: String) -> Result<(), Error> {
 /// the author shipped.
 fn patch_skill_md(md: &Path, mode: Invocation) -> Result<(), Error> {
     let text = std::fs::read_to_string(md)?;
-    let value = if mode == Invocation::Explicit { "true" } else { "false" };
+    let value = if mode == Invocation::Explicit {
+        "true"
+    } else {
+        "false"
+    };
     let mut out = Vec::new();
     let mut fences = 0;
     let mut written = false;
@@ -173,7 +179,11 @@ fn patch_skill_md(md: &Path, mode: Invocation) -> Result<(), Error> {
 /// Set `policy.allow_implicit_invocation` in agents/openai.yaml, creating
 /// the file when the author shipped none.
 fn patch_openai_yaml(path: &Path, mode: Invocation) -> Result<(), Error> {
-    let value = if mode == Invocation::Explicit { "false" } else { "true" };
+    let value = if mode == Invocation::Explicit {
+        "false"
+    } else {
+        "true"
+    };
     let line = format!("  allow_implicit_invocation: {value}");
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -213,69 +223,6 @@ fn patch_openai_yaml(path: &Path, mode: Invocation) -> Result<(), Error> {
     Ok(())
 }
 
-/// Resolve/fetch a skills source through the same pipeline repos use.
-/// Returns (expanded url, commit, checkout path).
-pub fn resolve_source(
-    entry: &SkillEntry,
-    locked: Option<&LockedRepo>,
-    store: &Store,
-    opts: SyncOptions,
-) -> Result<(String, String, PathBuf, bool), Error> {
-    let url = source::expand(&entry.source)?;
-    let wanted = entry.git_ref.as_deref().unwrap_or("HEAD");
-
-    let reusable = locked
-        .filter(|l| l.source == url && l.git_ref == wanted)
-        .map(|l| (l.commit.clone(), l.tag));
-
-    if opts.frozen && reusable.is_none() {
-        return Err(Error::FrozenDrift(format!("skills:{}", entry.source)));
-    }
-
-    if let Some((commit, tag)) = &reusable {
-        let checkout = store.checkout_dir(&url, commit, &[])?;
-        if checkout.is_dir() {
-            return Ok((url, commit.clone(), checkout, *tag));
-        }
-    }
-
-    // Slow path: single-flight, fetch, materialize (mirrors repo syncing).
-    let _lock = store.lock_remote(&url)?;
-    if let Some((commit, tag)) = &reusable {
-        let checkout = store.checkout_dir(&url, commit, &[])?;
-        if checkout.is_dir() {
-            return Ok((url, commit.clone(), checkout, *tag));
-        }
-    }
-    if opts.offline {
-        return Err(Error::OfflineMiss(format!("skills:{}", entry.source)));
-    }
-    let bare = git::ensure_bare(&store.bare_dir(&url)?)?;
-    let (commit, tag) = match &reusable {
-        Some((c, tag)) => {
-            let id = gix::ObjectId::from_hex(c.as_bytes()).map_err(|e| Error::Git(e.to_string()))?;
-            if bare.find_object(id).is_err() {
-                let target = if opts.frozen { c.as_str() } else { wanted };
-                let r = git::fetch_ref(&bare, &url, target, false)?;
-                store.mark_remote_checked(&url)?;
-                (r.commit, r.tag || *tag)
-            } else {
-                (c.clone(), *tag)
-            }
-        }
-        None => {
-            let r = git::fetch_ref(&bare, &url, wanted, false)?;
-            store.mark_remote_checked(&url)?;
-            (r.commit, r.tag)
-        }
-    };
-    let checkout = store.checkout_dir(&url, &commit, &[])?;
-    if !checkout.is_dir() {
-        crate::sync::materialize_checkout(&bare, &commit, &checkout)?;
-    }
-    Ok((url, commit, checkout, tag))
-}
-
 /// Find skills in a checkout: root `SKILL.md`, directories under `skills/`,
 /// and under each `plugins/<plugin>/skills/`. Skill collections may group
 /// skills in category directories (`skills/productivity/grill-me/SKILL.md`)
@@ -286,7 +233,10 @@ fn discover(checkout: &Path) -> Result<Vec<Found>, Error> {
     let root_md = checkout.join("SKILL.md");
     if root_md.is_file() {
         let name = frontmatter_name(&root_md)?;
-        found.push(Found { name, dir: checkout.to_path_buf() });
+        found.push(Found {
+            name,
+            dir: checkout.to_path_buf(),
+        });
     }
     let skills_dir = checkout.join("skills");
     if skills_dir.is_dir() {

@@ -9,11 +9,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::lockfile::{LockedRepo, Lockfile};
 use crate::link::LinkMode;
-use crate::manifest::{Manifest, RepoEntry};
+use crate::lockfile::{LockedRepo, Lockfile};
+use crate::manifest::{AgentEntry, Manifest, RepoEntry};
 use crate::store::Store;
-use crate::{git, ident, link, source, Error};
+use crate::{Error, git, ident, link, source};
 
 /// Max repos in flight at once. Enough to hide network latency, few enough
 /// to be polite to forges and the disk.
@@ -48,6 +48,7 @@ pub struct RepoSync {
 pub struct SyncReport {
     pub repos: Vec<RepoSync>,
     pub skills: Vec<crate::skills::SkillSync>,
+    pub agents: Vec<crate::agents::AgentSync>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -80,8 +81,13 @@ pub fn update(project_root: &Path, store: &Store, names: &[String]) -> Result<Sy
     let m = Manifest::load(project_root)?;
     let repo_names = m.repo_names();
     let skill_sources: Vec<String> = m.skill_entries().iter().map(|e| e.source.clone()).collect();
+    let agent_sources: Vec<String> = m
+        .agent_entries()?
+        .iter()
+        .map(|e| e.source.clone())
+        .collect();
     for n in names {
-        if !repo_names.contains(n) && !skill_sources.contains(n) {
+        if !repo_names.contains(n) && !skill_sources.contains(n) && !agent_sources.contains(n) {
             return Err(Error::NameNotFound(n.clone()));
         }
     }
@@ -95,6 +101,7 @@ fn run(
     update_names: Option<&[String]>,
 ) -> Result<SyncReport, Error> {
     let manifest = Manifest::load(project_root)?;
+    let agent_entries = manifest.agent_entries()?;
     let entries = manifest.entries();
     let mut lock = Lockfile::load(project_root)?.unwrap_or_default();
 
@@ -131,12 +138,25 @@ fn run(
 
     lock.retain_named(&entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>());
 
-    let skills = sync_skills_section(&manifest, &mut lock, store, opts, project_root, update_names)?;
+    let skills = sync_skills_section(
+        &manifest,
+        &mut lock,
+        store,
+        opts,
+        project_root,
+        update_names,
+    )?;
+    let agents = sync_agents_section(
+        &agent_entries,
+        &mut lock,
+        store,
+        opts,
+        project_root,
+        update_names,
+    )?;
 
-    // Prune links for entries no longer declared. Only things we manage:
-    // everything in .envit/repos is ours; in the skills dirs, only links
-    // that resolve into our store (or to our canonical entries).
-    prune_undeclared(project_root, store, &entries, &skills)?;
+    // Prune only entries envit can identify as its own.
+    prune_undeclared(project_root, store, &entries, &skills, Some(&agents))?;
 
     lock.save(project_root)?;
     write_agents_md(project_root, &entries, &repos)?;
@@ -145,7 +165,11 @@ fn run(
     }
     store.register_project(project_root)?;
 
-    Ok(SyncReport { repos, skills })
+    Ok(SyncReport {
+        repos,
+        skills,
+        agents,
+    })
 }
 
 /// Resolve + materialize every `skills` source; update the lock's skills
@@ -169,9 +193,17 @@ fn sync_skills_section(
                 Some(names) => names.contains(&se.source),
             };
         let locked = lock.get_skill_source(&se.source).cloned();
-        let (url, commit, checkout, tag) =
-            crate::skills::resolve_source(se, locked.as_ref().filter(|_| !force), store, opts)?;
-        skills.extend(crate::skills::materialize_source(se, &checkout, &commit, link_base, opts)?);
+        let (url, commit, checkout, tag) = resolve_source(
+            &se.source,
+            se.git_ref.as_deref(),
+            locked.as_ref().filter(|_| !force),
+            store,
+            opts,
+            "skills",
+        )?;
+        skills.extend(crate::skills::materialize_source(
+            se, &checkout, &commit, link_base, opts,
+        )?);
         lock.set_skill_source(LockedRepo {
             name: se.source.clone(),
             source: url,
@@ -180,11 +212,131 @@ fn sync_skills_section(
             tag,
         });
     }
-    lock.retain_skill_sources(&skill_entries.iter().map(|e| e.source.clone()).collect::<Vec<_>>());
+    lock.retain_skill_sources(
+        &skill_entries
+            .iter()
+            .map(|e| e.source.clone())
+            .collect::<Vec<_>>(),
+    );
     Ok(skills)
 }
 
-/// Sync the global manifest (`~/.envit/envit.toml`): skills only, linked
+fn sync_agents_section(
+    entries: &[AgentEntry],
+    lock: &mut Lockfile,
+    store: &Store,
+    opts: SyncOptions,
+    project_root: &Path,
+    update_names: Option<&[String]>,
+) -> Result<Vec<crate::agents::AgentSync>, Error> {
+    let mut agents = Vec::new();
+    let mut occupied = std::collections::BTreeSet::new();
+    for entry in entries {
+        let force = !entry.frozen
+            && match update_names {
+                None => false,
+                Some([]) => true,
+                Some(names) => names.contains(&entry.source),
+            };
+        let locked = lock.get_agent_source(&entry.source).cloned();
+        let (url, commit, checkout, tag) = resolve_source(
+            &entry.source,
+            entry.git_ref.as_deref(),
+            locked.as_ref().filter(|_| !force),
+            store,
+            opts,
+            "agents",
+        )?;
+        agents.extend(crate::agents::materialize_source(
+            entry,
+            &checkout,
+            &commit,
+            project_root,
+            store.root(),
+            opts.link_mode,
+            &mut occupied,
+        )?);
+        lock.set_agent_source(LockedRepo {
+            name: entry.source.clone(),
+            source: url,
+            git_ref: entry.git_ref.clone().unwrap_or_else(|| "HEAD".to_string()),
+            commit,
+            tag,
+        });
+    }
+    lock.retain_agent_sources(
+        &entries
+            .iter()
+            .map(|entry| entry.source.clone())
+            .collect::<Vec<_>>(),
+    );
+    Ok(agents)
+}
+
+/// Resolve a source repo shared by skills and agents through the same locked
+/// checkout path and single-flight fetch.
+fn resolve_source(
+    source_name: &str,
+    git_ref: Option<&str>,
+    locked: Option<&LockedRepo>,
+    store: &Store,
+    opts: SyncOptions,
+    section: &str,
+) -> Result<(String, String, PathBuf, bool), Error> {
+    let url = source::expand(source_name)?;
+    let wanted = git_ref.unwrap_or("HEAD");
+    let reusable = locked
+        .filter(|entry| entry.source == url && entry.git_ref == wanted)
+        .map(|entry| (entry.commit.clone(), entry.tag));
+
+    if opts.frozen && reusable.is_none() {
+        return Err(Error::FrozenDrift(format!("{section}:{source_name}")));
+    }
+    if let Some((commit, tag)) = &reusable {
+        let checkout = store.checkout_dir(&url, commit, &[])?;
+        if checkout.is_dir() {
+            return Ok((url, commit.clone(), checkout, *tag));
+        }
+    }
+
+    let _lock = store.lock_remote(&url)?;
+    if let Some((commit, tag)) = &reusable {
+        let checkout = store.checkout_dir(&url, commit, &[])?;
+        if checkout.is_dir() {
+            return Ok((url, commit.clone(), checkout, *tag));
+        }
+    }
+    if opts.offline {
+        return Err(Error::OfflineMiss(format!("{section}:{source_name}")));
+    }
+    let bare = git::ensure_bare(&store.bare_dir(&url)?)?;
+    let (commit, tag) = match &reusable {
+        Some((commit, tag)) => {
+            let id = gix::ObjectId::from_hex(commit.as_bytes())
+                .map_err(|error| Error::Git(error.to_string()))?;
+            if bare.find_object(id).is_err() {
+                let target = if opts.frozen { commit.as_str() } else { wanted };
+                let fetched = git::fetch_ref(&bare, &url, target, false)?;
+                store.mark_remote_checked(&url)?;
+                (fetched.commit, fetched.tag || *tag)
+            } else {
+                (commit.clone(), *tag)
+            }
+        }
+        None => {
+            let fetched = git::fetch_ref(&bare, &url, wanted, false)?;
+            store.mark_remote_checked(&url)?;
+            (fetched.commit, fetched.tag)
+        }
+    };
+    let checkout = store.checkout_dir(&url, &commit, &[])?;
+    if !checkout.is_dir() {
+        materialize_checkout(&bare, &commit, &checkout)?;
+    }
+    Ok((url, commit, checkout, tag))
+}
+
+/// Sync the global manifest (`~/.envit/envit.json`): skills only, linked
 /// under the user's home (`~/.agents/skills` + `~/.claude/skills`).
 pub fn sync_global(store: &Store, opts: SyncOptions) -> Result<SyncReport, Error> {
     sync_global_with(store, opts, None)
@@ -208,14 +360,20 @@ fn sync_global_with(
     if !manifest.entries().is_empty() {
         return Err(Error::GlobalRepos(root.join(ident::MANIFEST_FILE)));
     }
-    let home = crate::store::home_dir().ok_or_else(|| {
-        Error::Io(std::io::Error::other("cannot determine home directory"))
-    })?;
+    if !manifest.agent_entries()?.is_empty() {
+        return Err(Error::GlobalAgents(root.join(ident::MANIFEST_FILE)));
+    }
+    let home = crate::store::home_dir()
+        .ok_or_else(|| Error::Io(std::io::Error::other("cannot determine home directory")))?;
     let mut lock = Lockfile::load(&root)?.unwrap_or_default();
     let skills = sync_skills_section(&manifest, &mut lock, store, opts, &home, update_names)?;
-    prune_undeclared(&home, store, &[], &skills)?;
+    prune_undeclared(&home, store, &[], &skills, None)?;
     lock.save(&root)?;
-    Ok(SyncReport { repos: Vec::new(), skills })
+    Ok(SyncReport {
+        repos: Vec::new(),
+        skills,
+        agents: Vec::new(),
+    })
 }
 
 /// Does a global manifest exist? (Used by the CLI to decide whether plain
@@ -229,6 +387,7 @@ fn prune_undeclared(
     store: &Store,
     entries: &[RepoEntry],
     skills: &[crate::skills::SkillSync],
+    agents: Option<&[crate::agents::AgentSync]>,
 ) -> Result<(), Error> {
     // Repos: .envit/repos is wholly envit-managed.
     let repo_dir = project_root.join(ident::CONTEXT_DIR).join("repos");
@@ -248,6 +407,9 @@ fn prune_undeclared(
     prune_dir(&claude, |name, target| {
         target.is_none_or(|t| t.starts_with(&canonical)) && !managed.contains(&name)
     })?;
+    if let Some(agents) = agents {
+        crate::agents::prune(project_root, &store_root, agents)?;
+    }
     Ok(())
 }
 
@@ -255,11 +417,10 @@ fn prune_undeclared(
 /// A symlink passes its target (`Some`); a directory with a sibling
 /// `<name>.commit` marker is a managed copy and passes `None`. Anything
 /// else is the user's and is never touched.
-fn prune_dir(
-    dir: &Path,
-    should_remove: impl Fn(&str, Option<&Path>) -> bool,
-) -> Result<(), Error> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(()) };
+fn prune_dir(dir: &Path, should_remove: impl Fn(&str, Option<&Path>) -> bool) -> Result<(), Error> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
     for e in entries.flatten() {
         let path = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
@@ -358,7 +519,10 @@ fn sync_one(
     if let Some(commit) = &known_commit {
         let checkout = store.checkout_dir(&url, commit, &[])?;
         if checkout.is_dir() {
-            let link_path = project_root.join(ident::CONTEXT_DIR).join("repos").join(&entry.name);
+            let link_path = project_root
+                .join(ident::CONTEXT_DIR)
+                .join("repos")
+                .join(&entry.name);
             let outcome = link::materialize_link(&link_path, &checkout, opts.link_mode, commit)?;
             let action = if outcome == link::LinkOutcome::Unchanged {
                 Action::UpToDate
@@ -366,7 +530,14 @@ fn sync_one(
                 Action::LinkedExisting
             };
             return Ok((
-                RepoSync { name: entry.name.clone(), commit: commit.clone(), prev_commit, action, path: checkout, stats: None },
+                RepoSync {
+                    name: entry.name.clone(),
+                    commit: commit.clone(),
+                    prev_commit,
+                    action,
+                    path: checkout,
+                    stats: None,
+                },
                 LockedRepo {
                     name: entry.name.clone(),
                     source: url,
@@ -387,7 +558,10 @@ fn sync_one(
     if let Some(commit) = &known_commit {
         let checkout = store.checkout_dir(&url, commit, &[])?;
         if checkout.is_dir() {
-            let link_path = project_root.join(ident::CONTEXT_DIR).join("repos").join(&entry.name);
+            let link_path = project_root
+                .join(ident::CONTEXT_DIR)
+                .join("repos")
+                .join(&entry.name);
             link::materialize_link(&link_path, &checkout, opts.link_mode, commit)?;
             return Ok((
                 RepoSync {
@@ -415,7 +589,8 @@ fn sync_one(
     let commit = match &known_commit {
         Some(c) => {
             // Commit known but checkout missing; objects may be missing too.
-            let id = gix::ObjectId::from_hex(c.as_bytes()).map_err(|e| Error::Git(e.to_string()))?;
+            let id =
+                gix::ObjectId::from_hex(c.as_bytes()).map_err(|e| Error::Git(e.to_string()))?;
             if bare.find_object(id).is_err() {
                 if opts.offline {
                     return Err(Error::OfflineMiss(entry.name.clone()));
@@ -447,7 +622,10 @@ fn sync_one(
         None
     };
 
-    let link_path = project_root.join(ident::CONTEXT_DIR).join("repos").join(&entry.name);
+    let link_path = project_root
+        .join(ident::CONTEXT_DIR)
+        .join("repos")
+        .join(&entry.name);
     link::materialize_link(&link_path, &checkout, opts.link_mode, &commit)?;
 
     Ok((
