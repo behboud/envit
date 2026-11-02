@@ -2,11 +2,16 @@
 //! Manifest format (D6): JSON — `repos` array of strings/objects, `skills`
 //! object keyed by source.
 
-use envit_core::manifest::{Manifest, NewRepo, Pick};
-use envit_core::{ident, project, source, Error};
+use envit_core::manifest::{AgentFormat, AgentPick, AgentTarget, Manifest, NewRepo, Pick};
+use envit_core::{Error, ident, project, source};
 
 fn add(m: &mut Manifest, src: &str, git_ref: Option<&str>) -> Result<String, Error> {
-    m.add_repo(NewRepo { source: src, name: None, git_ref, sparse: &[] })
+    m.add_repo(NewRepo {
+        source: src,
+        name: None,
+        git_ref,
+        sparse: &[],
+    })
 }
 
 #[test]
@@ -36,7 +41,10 @@ fn json_format_roundtrip() {
     let entries = m.entries();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].name, "tokio");
-    assert_eq!(entries[0].git_ref, None, "string entry tracks the default branch");
+    assert_eq!(
+        entries[0].git_ref, None,
+        "string entry tracks the default branch"
+    );
     assert_eq!(entries[1].name, "effect");
     assert_eq!(entries[1].git_ref.as_deref(), Some("next"));
 
@@ -55,7 +63,10 @@ fn json_format_roundtrip() {
     assert!(!out.contains("tokio"), "{out}");
     assert!(out.contains("effect"), "{out}");
     let mut m = Manifest::load(root).unwrap();
-    assert!(matches!(m.remove_repo("tokio"), Err(Error::NameNotFound(_))));
+    assert!(matches!(
+        m.remove_repo("tokio"),
+        Err(Error::NameNotFound(_))
+    ));
 }
 
 #[test]
@@ -72,6 +83,15 @@ fn hand_written_minimal_manifest_just_works() {
   "skills": {
     "vercel-labs/agent-skills": ["web-design-guidelines", "react-best-practices"],
     "acme/team-skills": "*"
+  },
+  "agents": {
+    "humanlayer/skills": {
+      "path": "plugins/rpi/agents",
+      "pick": ["planner"],
+      "format": "envit-agent/v1",
+      "targets": ["claude", "codex", "pi", "opencode"],
+      "update": "frozen"
+    }
   }
 }"#,
     )
@@ -91,9 +111,53 @@ fn hand_written_minimal_manifest_just_works() {
     assert_eq!(names, ["web-design-guidelines", "react-best-practices"]);
     assert_eq!(s[1].pick, Pick::All);
 
+    let agents = m.agent_entries().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].source, "humanlayer/skills");
+    assert_eq!(agents[0].path.as_deref(), Some("plugins/rpi/agents"));
+    assert_eq!(agents[0].pick, AgentPick::Named(vec!["planner".into()]));
+    assert_eq!(agents[0].format, AgentFormat::Portable);
+    assert!(agents[0].frozen);
+    assert_eq!(
+        agents[0].targets,
+        [
+            AgentTarget::Claude,
+            AgentTarget::Codex,
+            AgentTarget::Pi,
+            AgentTarget::OpenCode
+        ]
+    );
+
     // Malformed JSON errors loudly (trailing comma).
-    std::fs::write(dir.path().join(ident::MANIFEST_FILE), "{\"repos\": [\"a/b\",]}").unwrap();
+    std::fs::write(
+        dir.path().join(ident::MANIFEST_FILE),
+        "{\"repos\": [\"a/b\",]}",
+    )
+    .unwrap();
     assert!(Manifest::load(dir.path()).is_err());
+}
+
+#[test]
+fn agent_manifest_requires_explicit_format_and_valid_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(ident::MANIFEST_FILE);
+    for doc in [
+        r#"{"agents":{"owner/repo":{"pick":"*","targets":["claude"]}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"envit-agent/v1"}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["cursor"]}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":[],"format":"native","targets":["claude"]}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":["reviewer","reviewer"],"format":"native","targets":["claude"]}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"taget":"codex"}}}"#,
+        r#"{"agents":{"owner/repo":{"path":"../agents","pick":"*","format":"native","targets":["claude"]}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":true}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":"auto"}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":"manual"}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"ttl":"1h"}}}"#,
+    ] {
+        std::fs::write(&path, doc).unwrap();
+        let manifest = Manifest::load(dir.path()).unwrap();
+        assert!(manifest.agent_entries().is_err(), "{doc}");
+    }
 }
 
 #[test]
@@ -107,7 +171,8 @@ fn pin_unpin_shape_transitions() {
 
     // Pin a plain string entry → object with sha/frozen/tracks.
     let mut m = Manifest::load(root).unwrap();
-    m.pin_repo("tokio", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+    m.pin_repo("tokio", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        .unwrap();
     m.save().unwrap();
     let out = std::fs::read_to_string(root.join(ident::MANIFEST_FILE)).unwrap();
     assert!(out.contains("\"update\": \"frozen\""), "{out}");
@@ -132,7 +197,10 @@ fn init_is_not_repeatable_and_updates_existing_gitignore() {
 
     project::init(root).unwrap();
     assert!(!root.join(".gitignore").exists());
-    assert!(matches!(project::init(root), Err(Error::AlreadyInitialized(_))));
+    assert!(matches!(
+        project::init(root),
+        Err(Error::AlreadyInitialized(_))
+    ));
 
     let dir2 = tempfile::tempdir().unwrap();
     let root2 = dir2.path();
@@ -163,20 +231,56 @@ fn find_root_walks_up_from_nested_dirs() {
 #[test]
 fn source_expansion_and_default_names() {
     let cases = [
-        ("tokio-rs/tokio", "https://github.com/tokio-rs/tokio.git", "tokio"),
-        ("github:tokio-rs/tokio", "https://github.com/tokio-rs/tokio.git", "tokio"),
-        ("gitlab:group/sub/repo", "https://gitlab.com/group/sub/repo.git", "repo"),
-        ("bitbucket:owner/repo", "https://bitbucket.org/owner/repo.git", "repo"),
-        ("codeberg:owner/repo", "https://codeberg.org/owner/repo.git", "repo"),
-        ("sourcehut:~user/repo", "https://git.sr.ht/~user/repo", "repo"),
-        ("https://git.corp.example/team/api.git", "https://git.corp.example/team/api.git", "api"),
+        (
+            "tokio-rs/tokio",
+            "https://github.com/tokio-rs/tokio.git",
+            "tokio",
+        ),
+        (
+            "github:tokio-rs/tokio",
+            "https://github.com/tokio-rs/tokio.git",
+            "tokio",
+        ),
+        (
+            "gitlab:group/sub/repo",
+            "https://gitlab.com/group/sub/repo.git",
+            "repo",
+        ),
+        (
+            "bitbucket:owner/repo",
+            "https://bitbucket.org/owner/repo.git",
+            "repo",
+        ),
+        (
+            "codeberg:owner/repo",
+            "https://codeberg.org/owner/repo.git",
+            "repo",
+        ),
+        (
+            "sourcehut:~user/repo",
+            "https://git.sr.ht/~user/repo",
+            "repo",
+        ),
+        (
+            "https://git.corp.example/team/api.git",
+            "https://git.corp.example/team/api.git",
+            "api",
+        ),
     ];
     for (src, url, name) in cases {
         assert_eq!(source::expand(src).unwrap(), url, "expanding {src}");
         assert_eq!(source::default_name(src).unwrap(), name, "naming {src}");
     }
 
-    for bad in ["github:justowner", "github:a/b/c", "a/b/c", "sourcehut:user/repo", "ssh://git@host/x", "tokio", "https://"] {
+    for bad in [
+        "github:justowner",
+        "github:a/b/c",
+        "a/b/c",
+        "sourcehut:user/repo",
+        "ssh://git@host/x",
+        "tokio",
+        "https://",
+    ] {
         assert!(source::expand(bad).is_err(), "{bad} should be rejected");
     }
 }
@@ -195,7 +299,10 @@ fn init_notes_envit_in_existing_agent_files() {
     assert!(a.contains("<!-- envit:begin -->") && a.contains("## envit: repo context"));
     assert!(a.contains(".envit/repos/<name>/"));
     let c = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
-    assert!(c.starts_with("Keep it simple.\n\n<!-- envit:begin -->"), "{c}");
+    assert!(
+        c.starts_with("Keep it simple.\n\n<!-- envit:begin -->"),
+        "{c}"
+    );
 
     // Idempotent: a second pass writes nothing and duplicates nothing.
     let written = project::inject_agent_notes(root).unwrap();
@@ -213,7 +320,10 @@ fn init_notes_envit_in_existing_agent_files() {
 
     // Absent files are never created.
     let empty = tempfile::tempdir().unwrap();
-    assert!(project::inject_agent_notes(empty.path()).unwrap().is_empty());
+    assert!(
+        project::inject_agent_notes(empty.path())
+            .unwrap()
+            .is_empty()
+    );
     assert!(!empty.path().join("AGENTS.md").exists());
 }
-

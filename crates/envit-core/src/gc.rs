@@ -8,9 +8,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::Error;
 use crate::lockfile::Lockfile;
 use crate::store::Store;
-use crate::Error;
 
 /// Checkouts younger than this are skipped: they may belong to a sync that
 /// hasn't written its lockfile yet.
@@ -45,7 +45,12 @@ pub fn gc(store: &Store, dry_run: bool) -> Result<GcReport, Error> {
             }
             continue;
         };
-        for repo in lock.repos().iter().chain(lock.skill_sources()) {
+        for repo in lock
+            .repos()
+            .iter()
+            .chain(lock.skill_sources())
+            .chain(lock.agent_sources())
+        {
             live.insert(store.checkout_dir(&repo.source, &repo.commit, &[])?);
         }
         kept_projects.push(root);
@@ -88,14 +93,20 @@ pub fn gc(store: &Store, dry_run: bool) -> Result<GcReport, Error> {
         removed.push((tmp, bytes));
     }
 
-    Ok(GcReport { removed, kept, pruned_projects })
+    Ok(GcReport {
+        removed,
+        kept,
+        pruned_projects,
+    })
 }
 
 fn tree_size(dir: &std::path::Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             let Ok(ft) = e.file_type() else { continue };
             if ft.is_dir() {

@@ -33,15 +33,17 @@ If `.envit/repos/` is missing but `envit.json` exists, run `envit sync`.
 
 | Command | Use it to |
 |---|---|
-| `envit sync` | Materialize everything the manifest declares. Fast when warm (~ms). Advances stale branch-tracking repos at most once per 24h. |
+| `envit sync` | Materialize the repos, skills, and project agents the manifest declares. Fast when warm (~ms). Advances stale branch-tracking repos at most once per 24h. |
 | `envit sync --frozen` | Reproduce the lockfile exactly (CI, sandboxes, teammates). Errors on manifest/lock drift instead of resolving. |
 | `envit sync --offline` | Never touch the network; link only what the store already has. |
 | `envit add <source> [--ref R] [--name N]` | Declare a new repo. `github:owner/repo`, other forge shorthands, or any https git URL. Omit `--ref` to track the default branch. Does not sync. |
 | `envit remove <name>` | Remove a declaration. |
-| `envit update [name…]` | Deliberately move branch-tracking repos to current remote heads. Prints `old → new`. |
+| `envit update [name…]` | Deliberately move branch-tracking repos, skills, and agents to current remote heads. Prints `old → new`. |
 | `envit pin <name>` | Freeze a repo at its currently locked commit. |
 | `envit unpin <name>` | Resume tracking its original ref. |
 | `envit status` | Per repo: ref, locked commit, link health, policy/staleness. Never touches the network. |
+| `envit skills` | Declared skill sources and picks, including global scope. |
+| `envit agents` | Declared project agents, format, targets, and locked source. |
 | `envit gc [--dry-run]` | Remove store checkouts no project references. |
 
 Env vars: `ENVIT_HOME` (store location, default `~/.envit`),
@@ -50,9 +52,9 @@ Env vars: `ENVIT_HOME` (store location, default `~/.envit`),
 
 ## Manifest format (`envit.json`)
 
-JSON: a list of repo links, plus an optional skills object. A bare
-`"owner/repo"` string means GitHub at the default branch; an entry needing
-options becomes an object:
+JSON: a list of repo links, plus optional `skills` and `agents` objects. A
+bare `"owner/repo"` string means GitHub at the default branch; an entry
+needing options becomes an object:
 
 ```json
 {
@@ -63,12 +65,64 @@ options becomes an object:
   ],
   "skills": {
     "vercel-labs/agent-skills": ["web-design-guidelines"]
+  },
+  "agents": {
+    "acme/agent-library": {
+      "path": "agents",
+      "pick": ["reviewer"],
+      "format": "envit-agent/v1",
+      "targets": ["claude", "codex", "pi", "opencode"]
+    }
   }
 }
 ```
 
-Per-entry keys: `source` (required), `name`, `ref`, `update`
-(`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), `history` (`"full"`).
+Agent entries require `pick`, `format`, and `targets`. `format` is
+`envit-agent/v1` or `native`. Targets must be explicitly selected from `claude`, `codex`, `pi`,
+and `opencode`; global manifests do not support agents.
+
+Portable source files are Markdown with this strict YAML frontmatter:
+
+```markdown
+---
+name: reviewer
+description: Reviews changes for correctness and safety.
+adapters:
+  claude:
+    tools: [Read, Grep]
+  codex:
+    sandbox_mode: read-only
+  pi:
+    tools: [read, grep]
+  opencode:
+    permission:
+      edit: deny
+---
+Review the change and explain concrete risks.
+```
+
+The shared schema accepts only `name`, `description`, and `adapters`. Unknown
+shared fields are errors. Adapter fields remain native to that host; envit
+passes them through without translating tools, permissions, or models. It
+emits Markdown for Claude Code, Pi, and OpenCode, and Codex TOML with the
+Markdown body in `developer_instructions`. OpenCode agents are always emitted
+as subagents.
+
+Native definitions are passed through byte-for-byte. Markdown `<name>.md`
+files can target Claude Code, Pi, or OpenCode only when the manifest names
+them. Codex requires `<name>.toml`. Files in a target subdirectory, such as
+`agents/opencode/reviewer.md`, override the shared file. For example,
+`humanlayer/skills` can select `plugins/rpi/agents` as a native source for
+Claude Code, Pi, and OpenCode. If a selected target has no definition, sync
+fails instead of silently omitting it.
+
+Repo and skill per-entry options include `source`, `name`, `ref`, `update`
+(`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), and `history` (`"full"`).
+Agent entries accept `path`, `ref`, and optional `update: "frozen"`; they
+stay at their locked commit on ordinary sync and advance only with `envit
+update <source>`. `auto`, `manual`, and `ttl` are not agent options. Agent
+installation fails rather than following a symlinked destination directory,
+preventing project entries from writing into shared/global agent directories.
 Skills are discovered at the source root, under `skills/`, and under
 `plugins/<plugin>/skills/`. Set `path` to scope discovery to another
 subdirectory in a monorepo. Skill sources also take `modelInvocable`

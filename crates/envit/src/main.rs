@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-use envit_core::manifest::{Manifest, NewRepo};
-use envit_core::{ident, project};
 use clap::{Parser, Subcommand};
+use envit_core::manifest::{AgentPick, Manifest, NewRepo};
+use envit_core::{ident, project};
 
 #[derive(Parser)]
 #[command(name = ident::TOOL_NAME, version, about = "Repo context for AI agents")]
@@ -52,9 +52,9 @@ enum Cmd {
         #[arg(short, long)]
         global: bool,
     },
-    /// Move branch-tracking repos/skills to their current remote heads
+    /// Move branch-tracking repos, skills, and agents to their current remote heads
     Update {
-        /// Repo or skill-source names to update (empty = all)
+        /// Repo, skill-source, or agent-source names to update (empty = all)
         names: Vec<String>,
         /// Update the global skills manifest instead
         #[arg(short, long)]
@@ -82,6 +82,8 @@ enum Cmd {
         #[arg(short, long)]
         global: bool,
     },
+    /// Show declared project agents, targets, format, and locked commit
+    Agents,
     /// Show each repo: ref, locked commit, link health
     Status,
 }
@@ -117,7 +119,12 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                 }
             }
         }
-        Cmd::Add { source, git_ref, name, sparse } => {
+        Cmd::Add {
+            source,
+            git_ref,
+            name,
+            sparse,
+        } => {
             let root = project::find_root(&cwd)?;
             let mut m = Manifest::load(&root)?;
             let added = m.add_repo(NewRepo {
@@ -136,7 +143,12 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             m.save()?;
             println!("✓ removed {name}");
         }
-        Cmd::Sync { frozen, offline, link_mode, global } => {
+        Cmd::Sync {
+            frozen,
+            offline,
+            link_mode,
+            global,
+        } => {
             let store = store::Store::open_default()?;
             let opts = sync::SyncOptions {
                 frozen,
@@ -149,12 +161,18 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             };
             // Scope: -g = global only. Otherwise project (plus global if a
             // global manifest exists); outside any project, global alone.
-            let project_root = if global { Err(envit_core::Error::ManifestNotFound(cwd.clone())) } else { project::find_root(&cwd) };
+            let project_root = if global {
+                Err(envit_core::Error::ManifestNotFound(cwd.clone()))
+            } else {
+                project::find_root(&cwd)
+            };
             let report = match &project_root {
                 Ok(root) => sync::sync_with(root, &store, opts)?,
-                Err(_) if global || sync::global_manifest_exists(&store) => {
-                    sync::SyncReport { repos: Vec::new(), skills: Vec::new() }
-                }
+                Err(_) if global || sync::global_manifest_exists(&store) => sync::SyncReport {
+                    repos: Vec::new(),
+                    skills: Vec::new(),
+                    agents: Vec::new(),
+                },
                 Err(e) => return Err(clone_err(e)),
             };
             let (mut total_files, mut total_bytes) = (0usize, 0u64);
@@ -184,7 +202,21 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                 }
             }
             for s in &report.skills {
-                println!("skill    {}  {}  ({})", s.name, &s.commit[..12.min(s.commit.len())], s.source);
+                println!(
+                    "skill    {}  {}  ({})",
+                    s.name,
+                    &s.commit[..12.min(s.commit.len())],
+                    s.source
+                );
+            }
+            for agent in &report.agents {
+                println!(
+                    "agent    {}  {}  ({}, {})",
+                    agent.name,
+                    &agent.commit[..12.min(agent.commit.len())],
+                    agent.source,
+                    agent.target.as_str()
+                );
             }
             // Global scope: always when -g; otherwise piggyback when the
             // global manifest exists. Every action printed, labeled.
@@ -192,13 +224,21 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             if global || sync::global_manifest_exists(&store) {
                 let greport = sync::sync_global(&store, opts)?;
                 for s in &greport.skills {
-                    println!("global   {}  {}  ({})", s.name, &s.commit[..12.min(s.commit.len())], s.source);
+                    println!(
+                        "global   {}  {}  ({})",
+                        s.name,
+                        &s.commit[..12.min(s.commit.len())],
+                        s.source
+                    );
                 }
                 global_count = greport.skills.len();
             }
             let mut notes = String::new();
             if !report.skills.is_empty() {
                 notes.push_str(&format!(" · {} skill(s)", report.skills.len()));
+            }
+            if !report.agents.is_empty() {
+                notes.push_str(&format!(" · {} agent target(s)", report.agents.len()));
             }
             if global_count > 0 {
                 notes.push_str(&format!(" · {global_count} global skill(s)"));
@@ -211,7 +251,10 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     human_bytes(total_bytes)
                 );
             } else {
-                println!("✓ synced {} repo(s){notes} · store unchanged", report.repos.len());
+                println!(
+                    "✓ synced {} repo(s){notes} · store unchanged",
+                    report.repos.len()
+                );
             }
         }
         Cmd::Update { names, global } => {
@@ -223,7 +266,21 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                 sync::update(&root, &store, &names)?
             };
             for s in &report.skills {
-                println!("skill    {}  {}  ({})", s.name, &s.commit[..12.min(s.commit.len())], s.source);
+                println!(
+                    "skill    {}  {}  ({})",
+                    s.name,
+                    &s.commit[..12.min(s.commit.len())],
+                    s.source
+                );
+            }
+            for agent in &report.agents {
+                println!(
+                    "agent    {}  {}  ({}, {})",
+                    agent.name,
+                    &agent.commit[..12.min(agent.commit.len())],
+                    agent.source,
+                    agent.target.as_str()
+                );
             }
             let mut moved = 0;
             for r in &report.repos {
@@ -231,7 +288,12 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                 match &r.prev_commit {
                     Some(prev) if *prev != r.commit => {
                         moved += 1;
-                        println!("updated  {}  {} → {}", r.name, short(prev), short(&r.commit));
+                        println!(
+                            "updated  {}  {} → {}",
+                            r.name,
+                            short(prev),
+                            short(&r.commit)
+                        );
                     }
                     _ => println!("current  {}  {}", r.name, short(&r.commit)),
                 }
@@ -257,10 +319,46 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             m.save()?;
             println!("▶ {name} tracking {tracked} again (run `envit update {name}` to move)");
         }
+        Cmd::Agents => {
+            let root = project::find_root(&cwd)?;
+            let manifest = Manifest::load(&root)?;
+            let lock = lockfile::Lockfile::load(&root)?.unwrap_or_default();
+            let entries = manifest.agent_entries()?;
+            if entries.is_empty() {
+                println!("no agents declared (add an \"agents\" object to envit.json)");
+            }
+            for entry in entries {
+                let commit = lock
+                    .get_agent_source(&entry.source)
+                    .map(|locked| locked.commit[..12.min(locked.commit.len())].to_string())
+                    .unwrap_or_else(|| "unsynced".to_string());
+                let picks = match entry.pick {
+                    AgentPick::All => "*".to_string(),
+                    AgentPick::Named(names) => names.join(", "),
+                };
+                let targets = entry
+                    .targets
+                    .iter()
+                    .map(|target| target.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "{}  [{}]  {}  [{}]  {}",
+                    entry.source,
+                    picks,
+                    entry.format.as_str(),
+                    targets,
+                    commit
+                );
+            }
+        }
         Cmd::Skills { global } => {
             let store = store::Store::open_default()?;
             let mut shown = 0;
-            let print_scope = |label: &str, root: &std::path::Path, shown: &mut usize| -> Result<(), envit_core::Error> {
+            let print_scope = |label: &str,
+                               root: &std::path::Path,
+                               shown: &mut usize|
+             -> Result<(), envit_core::Error> {
                 let m = Manifest::load(root)?;
                 let lock = lockfile::Lockfile::load(root)?.unwrap_or_default();
                 for e in m.skill_entries() {
@@ -288,7 +386,9 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                 print_scope("global   ", store.root(), &mut shown)?;
             }
             if shown == 0 {
-                println!("no skills declared (add a \"skills\" object to envit.json, or `envit init -g`)");
+                println!(
+                    "no skills declared (add a \"skills\" object to envit.json, or `envit init -g`)"
+                );
             }
         }
         Cmd::Gc { dry_run } => {
@@ -381,5 +481,9 @@ fn human_bytes(b: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{b} B") } else { format!("{v:.1} {}", UNITS[u]) }
+    if u == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
 }

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ident, Error};
+use crate::{Error, ident};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockedRepo {
@@ -32,14 +32,25 @@ struct LockDoc {
     version: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     repos: Vec<LockedRepo>,
-    #[serde(rename = "skillSources", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "skillSources",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     skill_sources: Vec<LockedRepo>,
+    #[serde(
+        rename = "agentSources",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    agent_sources: Vec<LockedRepo>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Lockfile {
     repos: Vec<LockedRepo>,
     skill_sources: Vec<LockedRepo>,
+    agent_sources: Vec<LockedRepo>,
 }
 
 impl Lockfile {
@@ -56,9 +67,13 @@ impl Lockfile {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(Error::Io(e)),
         };
-        let doc: LockDoc = serde_json::from_str(&text)
-            .map_err(|e| Error::LockfileShape(e.to_string()))?;
-        Ok(Some(Self { repos: doc.repos, skill_sources: doc.skill_sources }))
+        let doc: LockDoc =
+            serde_json::from_str(&text).map_err(|e| Error::LockfileShape(e.to_string()))?;
+        Ok(Some(Self {
+            repos: doc.repos,
+            skill_sources: doc.skill_sources,
+            agent_sources: doc.agent_sources,
+        }))
     }
 
     pub fn get(&self, name: &str) -> Option<&LockedRepo> {
@@ -88,6 +103,25 @@ impl Lockfile {
         self.skill_sources.retain(|r| names.contains(&r.name));
     }
 
+    pub fn get_agent_source(&self, name: &str) -> Option<&LockedRepo> {
+        self.agent_sources.iter().find(|r| r.name == name)
+    }
+
+    pub fn agent_sources(&self) -> &[LockedRepo] {
+        &self.agent_sources
+    }
+
+    pub fn set_agent_source(&mut self, entry: LockedRepo) {
+        match self.agent_sources.iter_mut().find(|r| r.name == entry.name) {
+            Some(existing) => *existing = entry,
+            None => self.agent_sources.push(entry),
+        }
+    }
+
+    pub fn retain_agent_sources(&mut self, names: &[String]) {
+        self.agent_sources.retain(|r| names.contains(&r.name));
+    }
+
     /// Insert or replace the entry with this name.
     pub fn set(&mut self, repo: LockedRepo) {
         match self.repos.iter_mut().find(|r| r.name == repo.name) {
@@ -113,9 +147,11 @@ impl Lockfile {
             version: 1,
             repos: self.repos.clone(),
             skill_sources: self.skill_sources.clone(),
+            agent_sources: self.agent_sources.clone(),
         };
         doc.repos.sort_by(|a, b| a.name.cmp(&b.name));
         doc.skill_sources.sort_by(|a, b| a.name.cmp(&b.name));
+        doc.agent_sources.sort_by(|a, b| a.name.cmp(&b.name));
         let mut text = serde_json::to_string_pretty(&doc)?;
         text.push('\n');
         Ok(text)
