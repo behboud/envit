@@ -173,6 +173,7 @@ fn portable_agent_renders_native_files_for_all_four_targets_and_is_locked() {
     assert!(updated_agent.contains("Use the revised checklist."));
 }
 
+#[cfg(unix)]
 #[test]
 fn native_agent_variants_are_passed_through_and_pruning_leaves_user_files() {
     let upstream = tempfile::tempdir().unwrap();
@@ -209,6 +210,33 @@ fn native_agent_variants_are_passed_through_and_pruning_leaves_user_files() {
     std::fs::write(
         project.path().join(".claude/agents/manual.md"),
         "user-owned\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join(".claude/agents/manual.md.commit"),
+        "unrelated tool marker\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join(".claude/agents/manual-linked.md"),
+        "also user-owned\n",
+    )
+    .unwrap();
+    let external_marker = store_dir.path().join("external-marker");
+    std::fs::write(
+        &external_marker,
+        format!(
+            "{}{}+native:claude:manual-linked",
+            envit_core::ident::AGENT_FILE_MARKER_PREFIX,
+            "a".repeat(40)
+        ),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        &external_marker,
+        project
+            .path()
+            .join(".claude/agents/manual-linked.md.commit"),
     )
     .unwrap();
     std::fs::write(
@@ -272,6 +300,10 @@ fn native_agent_variants_are_passed_through_and_pruning_leaves_user_files() {
         std::fs::read_to_string(project.path().join(".claude/agents/manual.md")).unwrap(),
         "user-owned\n"
     );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".claude/agents/manual-linked.md")).unwrap(),
+        "also user-owned\n"
+    );
 
     std::fs::write(project.path().join("envit.json"), "{\"repos\":[]}\n").unwrap();
     ok(&envit(project.path(), store_dir.path(), &["sync"]));
@@ -295,10 +327,61 @@ fn native_agent_variants_are_passed_through_and_pruning_leaves_user_files() {
         std::fs::read_to_string(project.path().join(".claude/agents/manual.md")).unwrap(),
         "user-owned\n"
     );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".claude/agents/manual-linked.md")).unwrap(),
+        "also user-owned\n"
+    );
     let lock: Value =
         serde_json::from_slice(&std::fs::read(project.path().join("envit.lock.json")).unwrap())
             .unwrap();
     assert!(lock.get("agentSources").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn sync_does_not_follow_symlinked_agent_destination_directories() {
+    let upstream = tempfile::tempdir().unwrap();
+    let agents = upstream.path().join("agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(agents.join("reviewer.md"), "native agent\n").unwrap();
+    agent_repo(upstream.path());
+    let source = format!("file://{}", upstream.path().display());
+
+    let project = tempfile::tempdir().unwrap();
+    let store_dir = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    std::fs::write(external.path().join("manual.md"), "user-owned\n").unwrap();
+    let stale = external.path().join("stale.md");
+    let stored_agent = store_dir.path().join("store/old/agent.md");
+    std::fs::create_dir_all(stored_agent.parent().unwrap()).unwrap();
+    std::fs::write(&stored_agent, "managed target\n").unwrap();
+    std::os::unix::fs::symlink(&stored_agent, &stale).unwrap();
+    std::fs::create_dir_all(project.path().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(external.path(), project.path().join(".claude/agents")).unwrap();
+    std::fs::write(project.path().join("envit.json"), "{\"repos\":[]}\n").unwrap();
+
+    ok(&envit(project.path(), store_dir.path(), &["sync"]));
+    assert!(
+        stale.exists(),
+        "pruning must not traverse an external target dir"
+    );
+    assert_eq!(
+        std::fs::read_to_string(external.path().join("manual.md")).unwrap(),
+        "user-owned\n"
+    );
+
+    std::fs::write(
+        project.path().join("envit.json"),
+        format!(
+            "{{\"agents\":{{\"{source}\":{{\"path\":\"agents\",\"pick\":[\"reviewer\"],\"format\":\"native\",\"targets\":[\"claude\"]}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    let out = envit(project.path(), store_dir.path(), &["sync"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains(".claude/agents"));
+    assert!(!external.path().join("reviewer.md").exists());
+    assert!(stale.exists());
 }
 
 #[test]

@@ -43,6 +43,9 @@ pub fn materialize_source(
     link_mode: LinkMode,
     occupied: &mut BTreeSet<(AgentTarget, String)>,
 ) -> Result<Vec<AgentSync>, Error> {
+    for target in &entry.targets {
+        validate_target_dir(project_root, *target)?;
+    }
     let root = source_root(checkout, entry.path.as_deref(), &entry.source)?;
     if !root.is_dir() {
         return Err(Error::AgentNotFound {
@@ -74,6 +77,11 @@ pub fn prune(project_root: &Path, store_root: &Path, desired: &[AgentSync]) -> R
     let desired_paths: HashSet<&Path> = desired.iter().map(|agent| agent.path.as_path()).collect();
     for target in AgentTarget::all() {
         let dir = project_root.join(target_dir(*target));
+        match validate_target_dir(project_root, *target) {
+            Ok(true) => {}
+            Ok(false) | Err(Error::LinkObstructed(_)) => continue,
+            Err(error) => return Err(error),
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -86,11 +94,7 @@ pub fn prune(project_root: &Path, store_root: &Path, desired: &[AgentSync]) -> R
             if desired_paths.contains(path.as_path()) {
                 continue;
             }
-            let is_store_link =
-                std::fs::read_link(&path).is_ok_and(|link| link.starts_with(store_root));
-            let is_managed_copy = entry.file_type().is_ok_and(|kind| kind.is_file())
-                && link::file_marker_path(&path).is_file();
-            if is_store_link || is_managed_copy {
+            if link::managed_file(&path, store_root) {
                 std::fs::remove_file(&path)?;
                 let _ = std::fs::remove_file(link::file_marker_path(&path));
             }
@@ -139,7 +143,12 @@ fn materialize_native(
             let destination = project_root
                 .join(target_dir(target))
                 .join(format!("{name}.{}", target_extension(target)));
-            let key = format!("{commit}+native:{}:{}", target.as_str(), source.display());
+            let key = format!(
+                "{}{commit}+native:{}:{}",
+                ident::AGENT_FILE_MARKER_PREFIX,
+                target.as_str(),
+                source.display()
+            );
             link::materialize_file_link(&destination, &source, link_mode, &key, store_root)?;
             out.push(AgentSync {
                 name: name.clone(),
@@ -181,7 +190,8 @@ fn materialize_portable(
                 .join(target_dir(*target))
                 .join(format!("{name}.{}", target_extension(*target)));
             let key = format!(
-                "{commit}+portable-v1:{}:{}",
+                "{}{commit}+portable-v1:{}:{}",
+                ident::AGENT_FILE_MARKER_PREFIX,
                 target.as_str(),
                 agent.path.display()
             );
@@ -590,6 +600,28 @@ fn validate_name(name: &str, path: &Path) -> Result<(), Error> {
         ));
     }
     Ok(())
+}
+
+/// Confirm every existing component of a harness directory is a real
+/// directory, so materialization and pruning cannot traverse symlinks.
+/// `false` means a path component is not created yet.
+fn validate_target_dir(project_root: &Path, target: AgentTarget) -> Result<bool, Error> {
+    let mut path = project_root.to_path_buf();
+    for component in Path::new(target_dir(target)).components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        path.push(name);
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(Error::Io(error)),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(Error::LinkObstructed(path));
+        }
+    }
+    Ok(true)
 }
 
 fn target_dir(target: AgentTarget) -> &'static str {

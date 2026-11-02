@@ -163,6 +163,13 @@ OpenCode, and TOML with `developer_instructions` for Codex. OpenCode output is
 always a subagent. If a target has no usable native file, sync errors instead
 of silently installing nothing.
 
+Agent sources stay at their locked commit on ordinary sync, even if the remote
+branch moves. Use `envit update <source>` to advance a source deliberately; an
+agent entry may set `"update": "frozen"` to opt out. Agent `update` does not
+accept `auto` or `manual`, and agent entries do not support `ttl`. Installation
+fails rather than following a symlinked project agent directory, so a project
+entry cannot write through a link into a shared/global agent directory.
+
 ## Constraints
 
 - No daemon. `ps` shows nothing between invocations.

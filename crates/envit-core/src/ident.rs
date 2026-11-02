@@ -12,6 +12,8 @@ pub const LOCK_FILE: &str = "envit.lock.json";
 pub const CONTEXT_DIR: &str = ".envit";
 /// The versioned portable agent-definition format.
 pub const PORTABLE_AGENT_FORMAT: &str = "envit-agent/v1";
+/// Prefix identifying envit-managed agent-file marker contents.
+pub const AGENT_FILE_MARKER_PREFIX: &str = "envit-agent-file:v1:";
 /// Target name used in the manifest for Claude Code agents.
 pub const AGENT_TARGET_CLAUDE: &str = "claude";
 /// Target name used in the manifest for Codex agents.

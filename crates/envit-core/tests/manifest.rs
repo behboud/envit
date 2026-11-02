@@ -89,7 +89,8 @@ fn hand_written_minimal_manifest_just_works() {
       "path": "plugins/rpi/agents",
       "pick": ["planner"],
       "format": "envit-agent/v1",
-      "targets": ["claude", "codex", "pi", "opencode"]
+      "targets": ["claude", "codex", "pi", "opencode"],
+      "update": "frozen"
     }
   }
 }"#,
@@ -116,6 +117,7 @@ fn hand_written_minimal_manifest_just_works() {
     assert_eq!(agents[0].path.as_deref(), Some("plugins/rpi/agents"));
     assert_eq!(agents[0].pick, AgentPick::Named(vec!["planner".into()]));
     assert_eq!(agents[0].format, AgentFormat::Portable);
+    assert!(agents[0].frozen);
     assert_eq!(
         agents[0].targets,
         [
@@ -148,6 +150,9 @@ fn agent_manifest_requires_explicit_format_and_valid_targets() {
         r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"taget":"codex"}}}"#,
         r#"{"agents":{"owner/repo":{"path":"../agents","pick":"*","format":"native","targets":["claude"]}}}"#,
         r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":true}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":"auto"}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"update":"manual"}}}"#,
+        r#"{"agents":{"owner/repo":{"pick":"*","format":"native","targets":["claude"],"ttl":"1h"}}}"#,
     ] {
         std::fs::write(&path, doc).unwrap();
         let manifest = Manifest::load(dir.path()).unwrap();

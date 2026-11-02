@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::Error;
+use crate::{Error, ident};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkOutcome {
@@ -62,7 +62,7 @@ pub fn materialize_file_contents(
 ) -> Result<LinkOutcome, Error> {
     let marker = marker_path(link);
     if std::fs::symlink_metadata(link).is_ok_and(|meta| meta.is_file())
-        && std::fs::read_to_string(&marker).ok().as_deref() == Some(key)
+        && file_marker_key(link).as_deref() == Some(key)
     {
         return Ok(LinkOutcome::Unchanged);
     }
@@ -139,14 +139,35 @@ fn file_exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
-fn managed_file(path: &Path, store_root: &Path) -> bool {
+pub(crate) fn managed_file(path: &Path, store_root: &Path) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
     if meta.file_type().is_symlink() {
         return std::fs::read_link(path).is_ok_and(|target| target.starts_with(store_root));
     }
-    meta.is_file() && marker_path(path).is_file()
+    meta.is_file() && file_marker_key(path).is_some()
+}
+
+fn file_marker_key(path: &Path) -> Option<String> {
+    let marker = marker_path(path);
+    if !std::fs::symlink_metadata(&marker).ok()?.is_file() {
+        return None;
+    }
+    let key = std::fs::read_to_string(marker).ok()?;
+    valid_agent_marker(&key).then_some(key)
+}
+
+fn valid_agent_marker(key: &str) -> bool {
+    let Some(rest) = key.strip_prefix(ident::AGENT_FILE_MARKER_PREFIX) else {
+        return false;
+    };
+    let Some((commit, kind)) = rest.split_once('+') else {
+        return false;
+    };
+    commit.len() == 40
+        && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && (kind.starts_with("native:") || kind.starts_with("portable-v1:"))
 }
 
 fn remove_managed_file(path: &Path, store_root: &Path) -> Result<(), Error> {

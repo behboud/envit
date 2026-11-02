@@ -153,8 +153,6 @@ pub struct AgentEntry {
     /// Subdirectory of the source repo containing the definitions.
     pub path: Option<String>,
     pub frozen: bool,
-    pub manual: bool,
-    pub ttl: Option<std::time::Duration>,
 }
 
 /// Input for `add_repo`. `name` defaults to the repo name from the source.
@@ -320,7 +318,7 @@ impl Manifest {
             for key in o.keys() {
                 if !matches!(
                     key.as_str(),
-                    "pick" | "format" | "targets" | "path" | "ref" | "update" | "ttl"
+                    "pick" | "format" | "targets" | "path" | "ref" | "update"
                 ) {
                     return Err(Error::ManifestShape(format!(
                         "unknown field 'agents.{src}.{key}'"
@@ -351,22 +349,11 @@ impl Manifest {
                     )));
                 }
             };
-            if update.is_some_and(|u| !matches!(u, "auto" | "manual" | "frozen")) {
+            if update.is_some_and(|value| value != "frozen") {
                 return Err(Error::ManifestShape(format!(
-                    "'agents.{src}.update' must be 'auto', 'manual', or 'frozen'"
+                    "'agents.{src}.update' only supports 'frozen'; use `envit update` to move sources"
                 )));
             }
-            let ttl = match o.get("ttl") {
-                None => None,
-                Some(Value::String(value)) => Some(parse_ttl(value).ok_or_else(|| {
-                    Error::ManifestShape(format!("'agents.{src}.ttl' is not a valid duration"))
-                })?),
-                Some(_) => {
-                    return Err(Error::ManifestShape(format!(
-                        "'agents.{src}.ttl' must be a duration string"
-                    )));
-                }
-            };
             let path = match o.get("path") {
                 None => None,
                 Some(Value::String(path)) => {
@@ -410,8 +397,6 @@ impl Manifest {
                 git_ref,
                 path,
                 frozen: update == Some("frozen"),
-                manual: update == Some("manual"),
-                ttl,
             });
         }
         Ok(out)

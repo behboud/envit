@@ -315,8 +315,10 @@ fn resolve_source(
             let id = gix::ObjectId::from_hex(commit.as_bytes())
                 .map_err(|error| Error::Git(error.to_string()))?;
             if bare.find_object(id).is_err() {
-                let target = if opts.frozen { commit.as_str() } else { wanted };
-                let fetched = git::fetch_ref(&bare, &url, target, false)?;
+                // A retained lock is immutable even when the checkout and
+                // bare objects are missing. Only an explicit update drops
+                // `reusable` and resolves the moving ref below.
+                let fetched = git::fetch_ref(&bare, &url, commit, false)?;
                 store.mark_remote_checked(&url)?;
                 (fetched.commit, fetched.tag || *tag)
             } else {
@@ -595,9 +597,9 @@ fn sync_one(
                 if opts.offline {
                     return Err(Error::OfflineMiss(entry.name.clone()));
                 }
-                // Frozen fetches by exact sha — never re-resolves the ref.
-                let target = if opts.frozen { c.as_str() } else { wanted };
-                let r = git::fetch_ref(&bare, &url, target, entry.history_full)?;
+                // A retained lock fetches by exact SHA. Only a fresh ref
+                // resolution below follows the moving manifest ref.
+                let r = git::fetch_ref(&bare, &url, c, entry.history_full)?;
                 store.mark_remote_checked(&url)?;
                 r.commit
             } else {

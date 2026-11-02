@@ -116,8 +116,13 @@ them. Codex requires `<name>.toml`. Files in a target subdirectory, such as
 Claude Code, Pi, and OpenCode. If a selected target has no definition, sync
 fails instead of silently omitting it.
 
-Per-entry keys: `source` (required), `name`, `ref`, `update`
-(`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), `history` (`"full"`).
+Repo and skill per-entry options include `source`, `name`, `ref`, `update`
+(`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), and `history` (`"full"`).
+Agent entries accept `path`, `ref`, and optional `update: "frozen"`; they
+stay at their locked commit on ordinary sync and advance only with `envit
+update <source>`. `auto`, `manual`, and `ttl` are not agent options. Agent
+installation fails rather than following a symlinked destination directory,
+preventing project entries from writing into shared/global agent directories.
 Skills are discovered at the source root, under `skills/`, and under
 `plugins/<plugin>/skills/`. Set `path` to scope discovery to another
 subdirectory in a monorepo. Skill sources also take `modelInvocable`
