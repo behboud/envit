@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 use clap::{Parser, Subcommand};
-use envit_core::manifest::{AgentPick, Manifest, NewRepo};
+use envit_core::manifest::{AgentPick, Manifest, NewRepo, Pick};
 use envit_core::{ident, project};
 
 #[derive(Parser)]
@@ -324,8 +324,15 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             let manifest = Manifest::load(&root)?;
             let lock = lockfile::Lockfile::load(&root)?.unwrap_or_default();
             let entries = manifest.agent_entries()?;
-            if entries.is_empty() {
-                println!("no agents declared (add an \"agents\" object to envit.json)");
+            let included_skills: Vec<_> = manifest
+                .skill_entries()
+                .into_iter()
+                .filter(|entry| entry.include_agents)
+                .collect();
+            if entries.is_empty() && included_skills.is_empty() {
+                println!(
+                    "no agents declared (add an \"agents\" object or set \"includeAgents\" on a skill)"
+                );
             }
             for entry in entries {
                 let commit = lock
@@ -347,6 +354,34 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     entry.source,
                     picks,
                     entry.format.as_str(),
+                    targets,
+                    commit
+                );
+            }
+            for entry in included_skills {
+                let picks = match entry.pick {
+                    Pick::All => "*".to_string(),
+                    Pick::Named(names) => names
+                        .iter()
+                        .map(|name| name.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                };
+                let targets = envit_core::manifest::AgentTarget::all()
+                    .iter()
+                    .map(|target| target.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let commit = lock
+                    .get_agent_source(&entry.source)
+                    .or_else(|| lock.get_skill_source(&entry.source))
+                    .map(|locked| locked.commit[..12.min(locked.commit.len())].to_string())
+                    .unwrap_or_else(|| "unsynced".to_string());
+                println!(
+                    "{}  [from skills: {}]  {}  [{}]  {}",
+                    entry.source,
+                    picks,
+                    ident::PORTABLE_AGENT_FORMAT,
                     targets,
                     commit
                 );
@@ -374,7 +409,8 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                             .collect::<Vec<_>>()
                             .join(", "),
                     };
-                    println!("{label}{}  [{}]  {}", e.source, picks, commit);
+                    let agent_mark = if e.include_agents { "  +agents" } else { "" };
+                    println!("{label}{}  [{}]{}  {}", e.source, picks, agent_mark, commit);
                     *shown += 1;
                 }
                 Ok(())

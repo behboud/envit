@@ -416,13 +416,13 @@ fn native_markdown_is_not_silently_converted_to_codex_toml() {
 }
 
 #[test]
-fn portable_frontmatter_rejects_host_fields_outside_adapters() {
+fn portable_frontmatter_rejects_unknown_fields() {
     let upstream = tempfile::tempdir().unwrap();
     let agents = upstream.path().join("agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
         agents.join("reviewer.md"),
-        "---\nname: reviewer\ndescription: test\nmodel: sonnet\n---\nbody\n",
+        "---\nname: reviewer\ndescription: test\ncolor: blue\n---\nbody\n",
     )
     .unwrap();
     agent_repo(upstream.path());
@@ -434,7 +434,7 @@ fn portable_frontmatter_rejects_host_fields_outside_adapters() {
     let out = envit(project.path(), store_dir.path(), &["sync"]);
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("unknown portable frontmatter field 'model'")
+        String::from_utf8_lossy(&out.stderr).contains("unknown portable frontmatter field 'color'")
     );
     assert!(!project.path().join(".claude/agents/reviewer.md").exists());
 }

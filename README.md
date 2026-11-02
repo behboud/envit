@@ -112,9 +112,30 @@ in a pick list rewrites both Claude's `disable-model-invocation` and Codex's
 
 ## Agent definitions
 
-Agents are active instructions, so each manifest entry must name what to pick,
-which source format to use, and which harnesses may install it. `agents` are
-project-scoped; global manifests remain skills-only.
+Agents are active instructions, so including them is opt-in. Top-level
+`agents` entries must name what to pick, which source format to use, and which
+harnesses may install it. `agents` are project-scoped; global manifests remain
+skills-only.
+
+A skill source can opt into its companion agents:
+
+```json
+"skills": {
+  "humanlayer/skills": {
+    "pick": ["show-me", "rpi"],
+    "includeAgents": true
+  }
+}
+```
+
+`pick` selects skill names. For each selected skill, envit checks its own
+`agents/` directory and, for plugin skills under
+`plugins/<plugin>/skills/`, the sibling `plugins/<plugin>/agents/` directory.
+Included definitions default to `envit-agent/v1` and all four targets. Portable
+rendering keeps the agent name, description, body, and explicit `adapters`;
+source-level `tools` and `model` hints are accepted but omitted, so each host
+uses its configured defaults. This can change the source tool restrictions;
+use explicit adapters when a target-specific restriction must be preserved.
 
 `format: "native"` passes definitions through unchanged. For example, install
 the upstream HumanLayer RPI Markdown agents to the three Markdown harnesses:
@@ -156,9 +177,10 @@ adapters:
 Review the change and explain concrete risks.
 ```
 
-Only `name`, `description`, and `adapters` are shared fields. Unknown shared
-fields are errors. Adapter fields are native to that one host and are passed
-through, not translated. envit emits Markdown for Claude Code, Pi, and
+`name`, `description`, and `adapters` are the portable fields. Unknown fields
+are errors, except `tools` and `model`, which are recognized source hints and
+omitted from rendered files. Adapter fields are native to that one host and are
+passed through, not translated. envit emits Markdown for Claude Code, Pi, and
 OpenCode, and TOML with `developer_instructions` for Codex. OpenCode output is
 always a subagent. If a target has no usable native file, sync errors instead
 of silently installing nothing.

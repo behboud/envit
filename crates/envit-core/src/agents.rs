@@ -415,7 +415,10 @@ fn parse_portable(path: &Path) -> Result<PortableAgent, Error> {
         return Err(invalid_agent(path, "frontmatter must be a mapping"));
     };
     for key in object.keys() {
-        if !matches!(key.as_str(), "name" | "description" | "adapters") {
+        if !matches!(
+            key.as_str(),
+            "name" | "description" | "adapters" | "tools" | "model"
+        ) {
             return Err(invalid_agent(
                 path,
                 format!("unknown portable frontmatter field '{key}'"),
@@ -439,6 +442,33 @@ fn parse_portable(path: &Path) -> Result<PortableAgent, Error> {
             )
         })?
         .to_string();
+
+    // Claude-native model and tool hints are accepted when importing plugin
+    // agents, but omitted from every portable rendering; each target uses its
+    // configured defaults. Target-specific overrides belong under adapters.
+    if let Some(model) = object.get("model")
+        && model.as_str().is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(invalid_agent(
+            path,
+            "source 'model' hint must be a non-empty string",
+        ));
+    }
+    if let Some(tools) = object.get("tools") {
+        let valid = tools.as_str().is_some_and(|value| !value.trim().is_empty())
+            || tools.as_array().is_some_and(|values| {
+                !values.is_empty()
+                    && values
+                        .iter()
+                        .all(|value| value.as_str().is_some_and(|name| !name.trim().is_empty()))
+            });
+        if !valid {
+            return Err(invalid_agent(
+                path,
+                "source 'tools' hint must be a non-empty string or list of strings",
+            ));
+        }
+    }
 
     let mut adapters = BTreeMap::new();
     if let Some(value) = object.get("adapters") {

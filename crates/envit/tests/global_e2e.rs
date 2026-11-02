@@ -159,6 +159,16 @@ fn global_skills_lifecycle() {
         "user-owned\n"
     );
 
+    // includeAgents is also project-scope, even when the source has no agents.
+    std::fs::write(
+        home.path().join(".envit/envit.json"),
+        format!("{{\"skills\":{{\"{url}\":{{\"pick\":[\"alpha\"],\"includeAgents\":true}}}}}}\n"),
+    )
+    .unwrap();
+    let out = envit(nowhere.path(), home.path(), &["sync", "-g"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("agents are project-scope"));
+
     // Removing the skill prunes the home links.
     std::fs::write(
         home.path().join(".envit/envit.json"),
