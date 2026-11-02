@@ -81,7 +81,10 @@ fn hand_written_minimal_manifest_just_works() {
     "https://git.corp.example/team/api.git"
   ],
   "skills": {
-    "vercel-labs/agent-skills": ["web-design-guidelines", "react-best-practices"],
+    "vercel-labs/agent-skills": {
+      "pick": ["web-design-guidelines", "react-best-practices"],
+      "includeAgents": true
+    },
     "acme/team-skills": "*"
   },
   "agents": {
@@ -110,6 +113,8 @@ fn hand_written_minimal_manifest_just_works() {
     };
     assert_eq!(names, ["web-design-guidelines", "react-best-practices"]);
     assert_eq!(s[1].pick, Pick::All);
+    assert!(s[0].include_agents);
+    assert!(!s[1].include_agents);
 
     let agents = m.agent_entries().unwrap();
     assert_eq!(agents.len(), 1);

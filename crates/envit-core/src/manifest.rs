@@ -75,6 +75,8 @@ pub struct SkillEntry {
     pub frozen: bool,
     pub manual: bool,
     pub ttl: Option<std::time::Duration>,
+    /// Include portable agent definitions associated with each selected skill.
+    pub include_agents: bool,
 }
 
 /// A harness that can discover an installed project agent.
@@ -241,6 +243,7 @@ impl Manifest {
                     frozen: false,
                     manual: false,
                     ttl: None,
+                    include_agents: false,
                 },
                 Value::String(s) => SkillEntry {
                     source,
@@ -254,6 +257,7 @@ impl Manifest {
                     frozen: false,
                     manual: false,
                     ttl: None,
+                    include_agents: false,
                 },
                 Value::Array(a) => SkillEntry {
                     source,
@@ -264,6 +268,7 @@ impl Manifest {
                     frozen: false,
                     manual: false,
                     ttl: None,
+                    include_agents: false,
                 },
                 Value::Object(o) => {
                     let pick = match o.get("pick") {
@@ -287,6 +292,10 @@ impl Manifest {
                         frozen: upd == Some("frozen"),
                         manual: upd == Some("manual"),
                         ttl: o.get("ttl").and_then(Value::as_str).and_then(parse_ttl),
+                        include_agents: o
+                            .get("includeAgents")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
                     }
                 }
                 _ => continue,

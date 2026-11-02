@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use crate::link::LinkMode;
 use crate::lockfile::{LockedRepo, Lockfile};
-use crate::manifest::{AgentEntry, Manifest, RepoEntry};
+use crate::manifest::{AgentEntry, AgentFormat, AgentPick, AgentTarget, Manifest, RepoEntry};
 use crate::store::Store;
 use crate::{Error, git, ident, link, source};
 
@@ -101,7 +101,7 @@ fn run(
     update_names: Option<&[String]>,
 ) -> Result<SyncReport, Error> {
     let manifest = Manifest::load(project_root)?;
-    let agent_entries = manifest.agent_entries()?;
+    let mut agent_entries = manifest.agent_entries()?;
     let entries = manifest.entries();
     let mut lock = Lockfile::load(project_root)?.unwrap_or_default();
 
@@ -138,7 +138,7 @@ fn run(
 
     lock.retain_named(&entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>());
 
-    let skills = sync_skills_section(
+    let (skills, included_agents) = sync_skills_section(
         &manifest,
         &mut lock,
         store,
@@ -146,6 +146,7 @@ fn run(
         project_root,
         update_names,
     )?;
+    agent_entries.extend(included_agents);
     let agents = sync_agents_section(
         &agent_entries,
         &mut lock,
@@ -182,8 +183,10 @@ fn sync_skills_section(
     opts: SyncOptions,
     link_base: &Path,
     update_names: Option<&[String]>,
-) -> Result<Vec<crate::skills::SkillSync>, Error> {
+) -> Result<(Vec<crate::skills::SkillSync>, Vec<AgentEntry>), Error> {
     let mut skills = Vec::new();
+    let mut included_agents = Vec::new();
+    let mut included_roots = std::collections::BTreeSet::new();
     let skill_entries = manifest.skill_entries();
     for se in &skill_entries {
         let force = !se.frozen
@@ -201,16 +204,53 @@ fn sync_skills_section(
             opts,
             "skills",
         )?;
-        skills.extend(crate::skills::materialize_source(
-            se, &checkout, &commit, link_base, opts,
-        )?);
+        let materialized =
+            crate::skills::materialize_source(se, &checkout, &commit, link_base, opts)?;
+        let agent_dirs = if se.include_agents {
+            crate::skills::companion_agent_dirs(&checkout, &materialized)
+        } else {
+            Vec::new()
+        };
+        skills.extend(materialized);
+        let git_ref = se.git_ref.clone().unwrap_or_else(|| "HEAD".to_string());
         lock.set_skill_source(LockedRepo {
             name: se.source.clone(),
-            source: url,
-            git_ref: se.git_ref.clone().unwrap_or_else(|| "HEAD".to_string()),
-            commit,
+            source: url.clone(),
+            git_ref: git_ref.clone(),
+            commit: commit.clone(),
             tag,
         });
+        if se.include_agents {
+            for path in agent_dirs {
+                let Some(path_text) = path.to_str() else {
+                    return Err(Error::ManifestShape(format!(
+                        "agent directory in skill source '{}' is not valid UTF-8",
+                        se.source
+                    )));
+                };
+                if !included_roots.insert((se.source.clone(), path_text.to_string())) {
+                    continue;
+                }
+                lock.set_agent_source(LockedRepo {
+                    name: se.source.clone(),
+                    source: url.clone(),
+                    git_ref: git_ref.clone(),
+                    commit: commit.clone(),
+                    tag,
+                });
+                included_agents.push(AgentEntry {
+                    source: se.source.clone(),
+                    pick: AgentPick::All,
+                    format: AgentFormat::Portable,
+                    targets: AgentTarget::all().to_vec(),
+                    git_ref: se.git_ref.clone(),
+                    path: Some(path_text.to_string()),
+                    // The skill resolver has already applied this update and
+                    // seeded the matching agent lock for the same checkout.
+                    frozen: true,
+                });
+            }
+        }
     }
     lock.retain_skill_sources(
         &skill_entries
@@ -218,7 +258,7 @@ fn sync_skills_section(
             .map(|e| e.source.clone())
             .collect::<Vec<_>>(),
     );
-    Ok(skills)
+    Ok((skills, included_agents))
 }
 
 fn sync_agents_section(
@@ -362,13 +402,22 @@ fn sync_global_with(
     if !manifest.entries().is_empty() {
         return Err(Error::GlobalRepos(root.join(ident::MANIFEST_FILE)));
     }
-    if !manifest.agent_entries()?.is_empty() {
+    if !manifest.agent_entries()?.is_empty()
+        || manifest
+            .skill_entries()
+            .iter()
+            .any(|entry| entry.include_agents)
+    {
         return Err(Error::GlobalAgents(root.join(ident::MANIFEST_FILE)));
     }
     let home = crate::store::home_dir()
         .ok_or_else(|| Error::Io(std::io::Error::other("cannot determine home directory")))?;
     let mut lock = Lockfile::load(&root)?.unwrap_or_default();
-    let skills = sync_skills_section(&manifest, &mut lock, store, opts, &home, update_names)?;
+    let (skills, included_agents) =
+        sync_skills_section(&manifest, &mut lock, store, opts, &home, update_names)?;
+    if !included_agents.is_empty() {
+        return Err(Error::GlobalAgents(root.join(ident::MANIFEST_FILE)));
+    }
     prune_undeclared(&home, store, &[], &skills, None)?;
     lock.save(&root)?;
     Ok(SyncReport {

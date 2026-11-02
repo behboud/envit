@@ -6,6 +6,7 @@
 //! fans out `.claude/skills/<name>` → canonical (Claude Code documents that
 //! skill entries may be symlinks).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{Invocation, Pick, SkillEntry};
@@ -23,6 +24,37 @@ pub struct SkillSync {
     pub source: String,
     pub commit: String,
     pub path: PathBuf,
+}
+
+/// Find portable agent roots associated with the selected skills. A skill
+/// may own an `agents/` child, or live under a plugin with sibling `agents/`.
+pub(crate) fn companion_agent_dirs(checkout: &Path, selected: &[SkillSync]) -> Vec<PathBuf> {
+    let mut roots = BTreeSet::new();
+    for skill in selected {
+        let mut candidates = vec![skill.path.join("agents")];
+        if let Ok(relative) = skill.path.strip_prefix(checkout) {
+            let components: Vec<_> = relative.components().collect();
+            if components.len() >= 4
+                && components[0].as_os_str() == "plugins"
+                && components[2].as_os_str() == "skills"
+            {
+                candidates.push(
+                    checkout
+                        .join("plugins")
+                        .join(components[1].as_os_str())
+                        .join("agents"),
+                );
+            }
+        }
+        for candidate in candidates {
+            if candidate.is_dir()
+                && let Ok(relative) = candidate.strip_prefix(checkout)
+            {
+                roots.insert(relative.to_path_buf());
+            }
+        }
+    }
+    roots.into_iter().collect()
 }
 
 /// A discovered skill inside a checkout: its directory and spec name.

@@ -64,7 +64,11 @@ needing options becomes an object:
     { "source": "serde-rs/serde", "ref": "v1.0.200", "update": "frozen" }
   ],
   "skills": {
-    "vercel-labs/agent-skills": ["web-design-guidelines"]
+    "vercel-labs/agent-skills": ["web-design-guidelines"],
+    "humanlayer/skills": {
+      "pick": ["show-me", "rpi"],
+      "includeAgents": true
+    }
   },
   "agents": {
     "acme/agent-library": {
@@ -77,9 +81,18 @@ needing options becomes an object:
 }
 ```
 
-Agent entries require `pick`, `format`, and `targets`. `format` is
+Top-level agent entries require `pick`, `format`, and `targets`. `format` is
 `envit-agent/v1` or `native`. Targets must be explicitly selected from `claude`, `codex`, `pi`,
 and `opencode`; global manifests do not support agents.
+
+A project skill source may set `"includeAgents": true` alongside `pick`.
+For each selected skill, envit checks a skill-local `agents/` directory and
+its plugin's sibling `plugins/<plugin>/agents/` directory. Included agents
+default to `envit-agent/v1` and all four targets. Portable output retains
+`name`, `description`, the Markdown body, and explicit `adapters`; source
+`tools` and `model` hints are accepted but omitted, so hosts use their own
+defaults. This can change tool restrictions; use target adapters when those
+restrictions must be preserved. Unknown other fields are errors.
 
 Portable source files are Markdown with this strict YAML frontmatter:
 
@@ -101,10 +114,12 @@ adapters:
 Review the change and explain concrete risks.
 ```
 
-The shared schema accepts only `name`, `description`, and `adapters`. Unknown
-shared fields are errors. Adapter fields remain native to that host; envit
-passes them through without translating tools, permissions, or models. It
-emits Markdown for Claude Code, Pi, and OpenCode, and Codex TOML with the
+The portable fields are `name`, `description`, and `adapters`. Source-level
+`tools` and `model` hints are accepted but omitted from generated files, so each
+host uses its configured defaults; this may change source tool restrictions.
+Other unknown fields are errors. Adapter fields remain native to that host;
+envit passes them through without translating tools, permissions, or models.
+It emits Markdown for Claude Code, Pi, and OpenCode, and Codex TOML with the
 Markdown body in `developer_instructions`. OpenCode agents are always emitted
 as subagents.
 
@@ -118,11 +133,12 @@ fails instead of silently omitting it.
 
 Repo and skill per-entry options include `source`, `name`, `ref`, `update`
 (`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), and `history` (`"full"`).
-Agent entries accept `path`, `ref`, and optional `update: "frozen"`; they
-stay at their locked commit on ordinary sync and advance only with `envit
-update <source>`. `auto`, `manual`, and `ttl` are not agent options. Agent
-installation fails rather than following a symlinked destination directory,
-preventing project entries from writing into shared/global agent directories.
+Skill entries may also use `includeAgents: true`. Top-level agent entries accept
+`path`, `ref`, and optional `update: "frozen"`; they stay at their locked commit
+on ordinary sync and advance only with `envit update <source>`. `auto`, `manual`,
+and `ttl` are not agent options. Agent installation fails rather than following
+a symlinked destination directory, preventing project entries from writing into
+shared/global agent directories.
 Skills are discovered at the source root, under `skills/`, and under
 `plugins/<plugin>/skills/`. Set `path` to scope discovery to another
 subdirectory in a monorepo. Skill sources also take `modelInvocable`
