@@ -87,3 +87,66 @@ fn fetch_branch_tag_and_extract_checkout() {
     let r2 = git::fetch_ref(&again, &url, "main", false).unwrap();
     assert_eq!(r2.commit, head);
 }
+
+/// A depth-1 fetch sees only the tip; re-fetching the same bare repo at a
+/// larger depth deepens it, and the first-parent walk reads committer times.
+#[test]
+fn deepen_shallow_fetch_and_read_commit_times() {
+    let upstream = tempfile::tempdir().unwrap();
+    let dir = upstream.path();
+    let run = |args: &[&str], date: Option<&str>| {
+        let mut cmd = Command::new("git");
+        cmd.args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t");
+        if let Some(d) = date {
+            cmd.env("GIT_AUTHOR_DATE", d).env("GIT_COMMITTER_DATE", d);
+        }
+        let out = cmd.output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    run(&["init", "-b", "main", "."], None);
+    let mut shas = Vec::new();
+    for (i, date) in [Some("2020-01-01T00:00:00Z"), Some("2020-01-02T00:00:00Z"), None]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(dir.join("f"), format!("{i}\n")).unwrap();
+        run(&["add", "."], None);
+        run(&["commit", "-m", &format!("c{i}")], date);
+        shas.push(run(&["rev-parse", "HEAD"], None));
+    }
+    let url = format!("file://{}", dir.display());
+
+    let store = tempfile::tempdir().unwrap();
+    let bare = git::ensure_bare(&store.path().join("repo.git")).unwrap();
+
+    let tip = git::fetch_ref(&bare, &url, "main", false).unwrap();
+    assert_eq!(tip.commit, shas[2]);
+    let shallow = git::first_parent_times(&bare, &tip.commit, 20).unwrap();
+    assert_eq!(shallow.len(), 1, "depth 1 holds only the tip: {shallow:?}");
+
+    // Deepening moves the shallow boundary; the walk stops there.
+    git::fetch_ref_at_depth(&bare, &url, "main", Some(2)).unwrap();
+    assert_eq!(git::first_parent_times(&bare, &tip.commit, 20).unwrap().len(), 2);
+
+    let deep = git::fetch_ref_at_depth(&bare, &url, "main", Some(20)).unwrap();
+    assert_eq!(deep.commit, tip.commit);
+    let times = git::first_parent_times(&bare, &tip.commit, 20).unwrap();
+    let got: Vec<&str> = times.iter().map(|(s, _)| s.as_str()).collect();
+    assert_eq!(got, [shas[2].as_str(), shas[1].as_str(), shas[0].as_str()]);
+    assert_eq!(times[1].1, 1_577_923_200, "2020-01-02T00:00:00Z");
+    assert_eq!(times[2].1, 1_577_836_800, "2020-01-01T00:00:00Z");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    assert!((now - times[0].1).abs() < 300, "tip is fresh: {}", times[0].1);
+
+    // `limit` caps the walk.
+    assert_eq!(git::first_parent_times(&bare, &tip.commit, 2).unwrap().len(), 2);
+}

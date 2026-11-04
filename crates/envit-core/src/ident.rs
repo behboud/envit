@@ -36,3 +36,6 @@ pub const HOME_ENV: &str = "ENVIT_HOME";
 pub const NO_REFRESH_ENV: &str = "ENVIT_NO_REFRESH";
 /// Env var overriding the global refresh TTL (e.g. "1h", "30m", "7d").
 pub const REFRESH_TTL_ENV: &str = "ENVIT_REFRESH_TTL";
+/// Env var overriding the minimum commit age for skill and agent sources
+/// (e.g. "0s" to accept a fresh tip once).
+pub const MIN_AGE_ENV: &str = "ENVIT_MIN_AGE";

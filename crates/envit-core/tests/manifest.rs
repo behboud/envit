@@ -105,7 +105,7 @@ fn hand_written_minimal_manifest_just_works() {
     assert_eq!(e[0].name, "tokio");
     assert_eq!(e[1].name, "api");
 
-    let s = m.skill_entries();
+    let s = m.skill_entries().unwrap();
     assert_eq!(s.len(), 2);
     let names: Vec<&str> = match &s[0].pick {
         Pick::Named(items) => items.iter().map(|i| i.name.as_str()).collect(),
@@ -162,6 +162,59 @@ fn agent_manifest_requires_explicit_format_and_valid_targets() {
         std::fs::write(&path, doc).unwrap();
         let manifest = Manifest::load(dir.path()).unwrap();
         assert!(manifest.agent_entries().is_err(), "{doc}");
+    }
+}
+
+#[test]
+fn min_age_parses_at_every_layer_and_rejects_bad_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(ident::MANIFEST_FILE);
+    std::fs::write(
+        &path,
+        r#"{
+  "minAge": "48h",
+  "skills": {
+    "owner/skills": { "pick": "*", "minAge": "0s" },
+    "owner/other": "*"
+  },
+  "agents": {
+    "owner/agents": {
+      "pick": "*", "format": "native", "targets": ["claude"], "minAge": "7d"
+    }
+  }
+}"#,
+    )
+    .unwrap();
+    let m = Manifest::load(dir.path()).unwrap();
+    let hours = |h: u64| Some(std::time::Duration::from_secs(h * 3600));
+    assert_eq!(m.min_age().unwrap(), hours(48));
+    let skills = m.skill_entries().unwrap();
+    assert_eq!(skills[0].min_age, hours(0));
+    assert_eq!(skills[1].min_age, None);
+    assert_eq!(m.agent_entries().unwrap()[0].min_age, hours(7 * 24));
+
+    // A typo must not silently weaken the gate.
+    for (doc, at) in [
+        (r#"{"minAge":"1 day"}"#, "'minAge'"),
+        (r#"{"minAge":24}"#, "'minAge'"),
+        (r#"{"skills":{"owner/skills":{"pick":"*","minAge":"24hrs"}}}"#, "'skills.owner/skills.minAge'"),
+        (
+            r#"{"agents":{"owner/agents":{"pick":"*","format":"native","targets":["claude"],"minAge":"soon"}}}"#,
+            "'agents.owner/agents.minAge'",
+        ),
+    ] {
+        std::fs::write(&path, doc).unwrap();
+        let m = Manifest::load(dir.path()).unwrap();
+        let err = m
+            .min_age()
+            .and_then(|_| m.skill_entries())
+            .and_then(|_| m.agent_entries())
+            .err()
+            .unwrap_or_else(|| panic!("{doc} should be rejected"));
+        assert!(
+            matches!(&err, Error::ManifestShape(msg) if msg.contains(at)),
+            "{doc}: {err}"
+        );
     }
 }
 

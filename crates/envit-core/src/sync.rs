@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use crate::link::LinkMode;
 use crate::lockfile::{LockedRepo, Lockfile};
@@ -22,6 +23,10 @@ const MAX_PARALLEL: usize = 6;
 /// Staleness window for `auto` repos (PRD §12a). A remote checked within
 /// this window is not re-contacted by plain `sync`.
 const REFRESH_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Minimum committer-date age before a skill or agent source adopts a new
+/// commit from a moving ref. Gives the public time to catch a bad release.
+const MIN_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -49,6 +54,64 @@ pub struct SyncReport {
     pub repos: Vec<RepoSync>,
     pub skills: Vec<crate::skills::SkillSync>,
     pub agents: Vec<crate::agents::AgentSync>,
+    /// Sources whose ref tip was younger than the minimum age: an older
+    /// commit was locked instead.
+    pub held: Vec<Held>,
+}
+
+/// A moving ref whose tip was too new; `chosen` was locked instead.
+#[derive(Debug, Clone)]
+pub struct Held {
+    /// `"skills"` or `"agents"`.
+    pub section: &'static str,
+    pub source: String,
+    pub tip: String,
+    /// Committer time, seconds since the epoch.
+    pub tip_time: i64,
+    pub chosen: String,
+    pub chosen_time: i64,
+    pub min_age: Duration,
+    /// `chosen` is the prior lock: nothing newer was old enough.
+    pub kept: bool,
+}
+
+/// How long ago a committer time (seconds since the epoch) was. A commit
+/// dated in the future is zero days old.
+pub fn commit_age(time: i64) -> Duration {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    Duration::from_secs(now.saturating_sub(u64::try_from(time).unwrap_or(0)))
+}
+
+/// Short age label in the largest fitting unit: `45s`, `20m`, `24h`, `3d`.
+pub fn age_label(age: Duration) -> String {
+    let s = age.as_secs();
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        3600..172_800 => format!("{}h", s / 3600),
+        _ => format!("{}d", s / 86_400),
+    }
+}
+
+/// The `ENVIT_MIN_AGE` value when set and valid. It overrides every
+/// manifest `minAge`, so the CLI shows it rather than let it hide in a
+/// shell profile.
+pub fn min_age_override() -> Option<(String, Duration)> {
+    let v = std::env::var(ident::MIN_AGE_ENV).ok()?;
+    let d = crate::manifest::parse_ttl(&v)?;
+    Some((v, d))
+}
+
+/// The minimum age in force for one source, first match wins:
+/// `ENVIT_MIN_AGE`, the entry's `minAge`, the manifest's `minAge`, 24h.
+fn min_age(entry: Option<Duration>, manifest: Option<Duration>) -> Duration {
+    min_age_override()
+        .map(|(_, d)| d)
+        .or(entry)
+        .or(manifest)
+        .unwrap_or(MIN_AGE)
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -80,7 +143,7 @@ pub fn sync_with(
 pub fn update(project_root: &Path, store: &Store, names: &[String]) -> Result<SyncReport, Error> {
     let m = Manifest::load(project_root)?;
     let repo_names = m.repo_names();
-    let skill_sources: Vec<String> = m.skill_entries().iter().map(|e| e.source.clone()).collect();
+    let skill_sources: Vec<String> = m.skill_entries()?.iter().map(|e| e.source.clone()).collect();
     let agent_sources: Vec<String> = m
         .agent_entries()?
         .iter()
@@ -138,6 +201,7 @@ fn run(
 
     lock.retain_named(&entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>());
 
+    let mut held = Vec::new();
     let (skills, included_agents) = sync_skills_section(
         &manifest,
         &mut lock,
@@ -145,15 +209,18 @@ fn run(
         opts,
         project_root,
         update_names,
+        &mut held,
     )?;
     agent_entries.extend(included_agents);
     let agents = sync_agents_section(
         &agent_entries,
+        manifest.min_age()?,
         &mut lock,
         store,
         opts,
         project_root,
         update_names,
+        &mut held,
     )?;
 
     // Prune only entries envit can identify as its own.
@@ -170,6 +237,7 @@ fn run(
         repos,
         skills,
         agents,
+        held,
     })
 }
 
@@ -183,11 +251,13 @@ fn sync_skills_section(
     opts: SyncOptions,
     link_base: &Path,
     update_names: Option<&[String]>,
+    held: &mut Vec<Held>,
 ) -> Result<(Vec<crate::skills::SkillSync>, Vec<AgentEntry>), Error> {
     let mut skills = Vec::new();
     let mut included_agents = Vec::new();
     let mut included_roots = std::collections::BTreeSet::new();
-    let skill_entries = manifest.skill_entries();
+    let skill_entries = manifest.skill_entries()?;
+    let manifest_min_age = manifest.min_age()?;
     for se in &skill_entries {
         let force = !se.frozen
             && match update_names {
@@ -196,14 +266,23 @@ fn sync_skills_section(
                 Some(names) => names.contains(&se.source),
             };
         let locked = lock.get_skill_source(&se.source).cloned();
-        let (url, commit, checkout, tag) = resolve_source(
+        let ResolvedSource {
+            url,
+            commit,
+            checkout,
+            tag,
+            held: hold,
+        } = resolve_source(
             &se.source,
             se.git_ref.as_deref(),
-            locked.as_ref().filter(|_| !force),
+            locked.as_ref(),
+            force,
+            min_age(se.min_age, manifest_min_age),
             store,
             opts,
             "skills",
         )?;
+        held.extend(hold);
         let materialized =
             crate::skills::materialize_source(se, &checkout, &commit, link_base, opts)?;
         let agent_dirs = if se.include_agents {
@@ -248,6 +327,7 @@ fn sync_skills_section(
                     // The skill resolver has already applied this update and
                     // seeded the matching agent lock for the same checkout.
                     frozen: true,
+                    min_age: se.min_age,
                 });
             }
         }
@@ -261,13 +341,16 @@ fn sync_skills_section(
     Ok((skills, included_agents))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sync_agents_section(
     entries: &[AgentEntry],
+    manifest_min_age: Option<Duration>,
     lock: &mut Lockfile,
     store: &Store,
     opts: SyncOptions,
     project_root: &Path,
     update_names: Option<&[String]>,
+    held: &mut Vec<Held>,
 ) -> Result<Vec<crate::agents::AgentSync>, Error> {
     let mut agents = Vec::new();
     let mut occupied = std::collections::BTreeSet::new();
@@ -279,14 +362,23 @@ fn sync_agents_section(
                 Some(names) => names.contains(&entry.source),
             };
         let locked = lock.get_agent_source(&entry.source).cloned();
-        let (url, commit, checkout, tag) = resolve_source(
+        let ResolvedSource {
+            url,
+            commit,
+            checkout,
+            tag,
+            held: hold,
+        } = resolve_source(
             &entry.source,
             entry.git_ref.as_deref(),
-            locked.as_ref().filter(|_| !force),
+            locked.as_ref(),
+            force,
+            min_age(entry.min_age, manifest_min_age),
             store,
             opts,
             "agents",
         )?;
+        held.extend(hold);
         agents.extend(crate::agents::materialize_source(
             entry,
             &checkout,
@@ -313,21 +405,40 @@ fn sync_agents_section(
     Ok(agents)
 }
 
+struct ResolvedSource {
+    url: String,
+    commit: String,
+    checkout: PathBuf,
+    tag: bool,
+    held: Option<Held>,
+}
+
 /// Resolve a source repo shared by skills and agents through the same locked
-/// checkout path and single-flight fetch.
+/// checkout path and single-flight fetch. `locked` is the prior lock entry
+/// even when `force` (an update) means it is not reused.
+#[allow(clippy::too_many_arguments)]
 fn resolve_source(
     source_name: &str,
     git_ref: Option<&str>,
     locked: Option<&LockedRepo>,
+    force: bool,
+    min_age: Duration,
     store: &Store,
     opts: SyncOptions,
-    section: &str,
-) -> Result<(String, String, PathBuf, bool), Error> {
+    section: &'static str,
+) -> Result<ResolvedSource, Error> {
     let url = source::expand(source_name)?;
     let wanted = git_ref.unwrap_or("HEAD");
     let reusable = locked
-        .filter(|entry| entry.source == url && entry.git_ref == wanted)
+        .filter(|entry| !force && entry.source == url && entry.git_ref == wanted)
         .map(|entry| (entry.commit.clone(), entry.tag));
+    let reused = |url: String, commit: &String, checkout: PathBuf, tag: bool| ResolvedSource {
+        url,
+        commit: commit.clone(),
+        checkout,
+        tag,
+        held: None,
+    };
 
     if opts.frozen && reusable.is_none() {
         return Err(Error::FrozenDrift(format!("{section}:{source_name}")));
@@ -335,7 +446,7 @@ fn resolve_source(
     if let Some((commit, tag)) = &reusable {
         let checkout = store.checkout_dir(&url, commit, &[])?;
         if checkout.is_dir() {
-            return Ok((url, commit.clone(), checkout, *tag));
+            return Ok(reused(url, commit, checkout, *tag));
         }
     }
 
@@ -343,13 +454,14 @@ fn resolve_source(
     if let Some((commit, tag)) = &reusable {
         let checkout = store.checkout_dir(&url, commit, &[])?;
         if checkout.is_dir() {
-            return Ok((url, commit.clone(), checkout, *tag));
+            return Ok(reused(url, commit, checkout, *tag));
         }
     }
     if opts.offline {
         return Err(Error::OfflineMiss(format!("{section}:{source_name}")));
     }
     let bare = git::ensure_bare(&store.bare_dir(&url)?)?;
+    let mut held = None;
     let (commit, tag) = match &reusable {
         Some((commit, tag)) => {
             let id = gix::ObjectId::from_hex(commit.as_bytes())
@@ -366,16 +478,102 @@ fn resolve_source(
             }
         }
         None => {
-            let fetched = git::fetch_ref(&bare, &url, wanted, false)?;
+            let tip = git::fetch_ref(&bare, &url, wanted, false)?;
+            held = pick(&bare, &url, wanted, &tip, min_age, locked, section, source_name)?;
             store.mark_remote_checked(&url)?;
-            (fetched.commit, fetched.tag)
+            let commit = held.as_ref().map_or(tip.commit, |h| h.chosen.clone());
+            (commit, tip.tag)
         }
     };
     let checkout = store.checkout_dir(&url, &commit, &[])?;
     if !checkout.is_dir() {
         materialize_checkout(&bare, &commit, &checkout)?;
     }
-    Ok((url, commit, checkout, tag))
+    Ok(ResolvedSource {
+        url,
+        commit,
+        checkout,
+        tag,
+        held,
+    })
+}
+
+/// The minimum-age gate on a freshly resolved ref tip. `None` adopts the
+/// tip; `Some` names an older commit to lock instead: the newest
+/// first-parent ancestor at least `min_age` old, or the prior lock (`kept`)
+/// when moving would go backward or nothing is old enough. History is
+/// deepened only when the tip itself is too new; a too-new tag has no
+/// fallback.
+#[allow(clippy::too_many_arguments)]
+fn pick(
+    bare: &gix::Repository,
+    url: &str,
+    wanted: &str,
+    tip: &git::Resolved,
+    min_age: Duration,
+    prior_lock: Option<&LockedRepo>,
+    section: &'static str,
+    source_name: &str,
+) -> Result<Option<Held>, Error> {
+    let is_sha = wanted.len() == 40 && wanted.bytes().all(|b| b.is_ascii_hexdigit());
+    if min_age.is_zero() || is_sha || prior_lock.is_some_and(|l| l.commit == tip.commit) {
+        return Ok(None);
+    }
+    let tip_time = match git::first_parent_times(bare, &tip.commit, 1)?.first() {
+        Some((_, time)) => *time,
+        None => return Err(Error::Git(format!("commit {} missing after fetch", tip.commit))),
+    };
+    if commit_age(tip_time) >= min_age {
+        return Ok(None);
+    }
+    let held = |chosen: &str, chosen_time: i64, kept: bool| Held {
+        section,
+        source: source_name.to_string(),
+        tip: tip.commit.clone(),
+        tip_time,
+        chosen: chosen.to_string(),
+        chosen_time,
+        min_age,
+        kept,
+    };
+    if !tip.tag {
+        for depth in [20u32, 200] {
+            git::fetch_ref_at_depth(bare, url, wanted, Some(depth))?;
+            let walk = git::first_parent_times(bare, &tip.commit, depth as usize)?;
+            for (sha, time) in &walk {
+                // Reaching the lock first means every old-enough commit is
+                // older than it: never move backward.
+                if prior_lock.is_some_and(|l| &l.commit == sha) {
+                    return Ok(Some(held(sha, *time, true)));
+                }
+                if commit_age(*time) >= min_age {
+                    return Ok(Some(held(sha, *time, false)));
+                }
+            }
+            if walk.len() < depth as usize {
+                break;
+            }
+        }
+        // Nothing old enough: an update keeps what the lock already has.
+        if let Some(lock) = prior_lock.filter(|l| l.source == url && l.git_ref == wanted) {
+            let id = gix::ObjectId::from_hex(lock.commit.as_bytes())
+                .map_err(|e| Error::Git(e.to_string()))?;
+            if bare.find_object(id).is_err() {
+                git::fetch_ref(bare, url, &lock.commit, false)?;
+            }
+            let time = git::first_parent_times(bare, &lock.commit, 1)?
+                .first()
+                .map_or(0, |(_, t)| *t);
+            return Ok(Some(held(&lock.commit, time, true)));
+        }
+    }
+    Err(Error::TooNew {
+        from: format!("{section}:{source_name}"),
+        rref: wanted.to_string(),
+        tip: tip.commit[..12.min(tip.commit.len())].to_string(),
+        age: age_label(commit_age(tip_time)),
+        min_age: age_label(min_age),
+    })
 }
 
 /// Sync the global manifest (`~/.envit/envit.json`): skills only, linked
@@ -404,7 +602,7 @@ fn sync_global_with(
     }
     if !manifest.agent_entries()?.is_empty()
         || manifest
-            .skill_entries()
+            .skill_entries()?
             .iter()
             .any(|entry| entry.include_agents)
     {
@@ -413,8 +611,16 @@ fn sync_global_with(
     let home = crate::store::home_dir()
         .ok_or_else(|| Error::Io(std::io::Error::other("cannot determine home directory")))?;
     let mut lock = Lockfile::load(&root)?.unwrap_or_default();
-    let (skills, included_agents) =
-        sync_skills_section(&manifest, &mut lock, store, opts, &home, update_names)?;
+    let mut held = Vec::new();
+    let (skills, included_agents) = sync_skills_section(
+        &manifest,
+        &mut lock,
+        store,
+        opts,
+        &home,
+        update_names,
+        &mut held,
+    )?;
     if !included_agents.is_empty() {
         return Err(Error::GlobalAgents(root.join(ident::MANIFEST_FILE)));
     }
@@ -424,6 +630,7 @@ fn sync_global_with(
         repos: Vec::new(),
         skills,
         agents: Vec::new(),
+        held,
     })
 }
 

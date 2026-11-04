@@ -4,6 +4,8 @@
 //! - [`ensure_bare`]: open or create the store's bare repo for a remote
 //! - [`fetch_ref`]: fetch one ref (branch/tag/sha) into the bare repo,
 //!   shallow by default; returns the resolved commit SHA
+//!   ([`fetch_ref_at_depth`] picks the depth, deepening an existing shallow repo)
+//! - [`first_parent_times`]: committer times along first-parent history
 //! - [`extract_checkout`]: materialize a commit's tree into a directory
 //!
 //! gix is the sole engine (PRD §20 D4): deterministic by construction and
@@ -41,6 +43,18 @@ pub fn fetch_ref(
     wanted: &str,
     full_history: bool,
 ) -> Result<Resolved, Error> {
+    fetch_ref_at_depth(bare, url, wanted, if full_history { None } else { Some(1) })
+}
+
+/// Like [`fetch_ref`], with the history depth from the ref tip spelled out:
+/// `Some(n)` fetches the tip plus `n - 1` ancestors (and deepens an existing
+/// shallow repo to that depth), `None` fetches full history.
+pub fn fetch_ref_at_depth(
+    bare: &gix::Repository,
+    url: &str,
+    wanted: &str,
+    depth: Option<u32>,
+) -> Result<Resolved, Error> {
     let is_sha = wanted.len() == 40 && wanted.bytes().all(|b| b.is_ascii_hexdigit());
 
     // Source-only refspecs (like `git fetch <url> <ref>`): objects land in
@@ -71,10 +85,9 @@ pub fn fetch_ref(
     let mut prepare = connection
         .prepare_fetch(gix::progress::Discard, Default::default())
         .map_err(|e| not_found(e.to_string()))?;
-    if !full_history {
-        prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(
-            1.try_into().expect("1 is non-zero"),
-        ));
+    if let Some(n) = depth {
+        let n = n.try_into().map_err(|_| Error::Git("fetch depth must be non-zero".into()))?;
+        prepare = prepare.with_shallow(gix::remote::fetch::Shallow::DepthAtRemote(n));
     }
     let outcome = prepare
         .receive(gix::progress::Discard, &gix::interrupt::IS_INTERRUPTED)
@@ -106,6 +119,32 @@ pub fn fetch_ref(
         }
     }
     Err(Error::RefNotFound { rref: wanted.to_string(), url: url.to_string() })
+}
+
+/// Up to `limit` commits along the first-parent chain from `tip` (tip
+/// first), each as `(sha, committer seconds since epoch)`. Stops at the
+/// shallow boundary or the root, so fewer than `limit` entries means this
+/// repo holds no more history on that chain.
+pub fn first_parent_times(
+    bare: &gix::Repository,
+    tip: &str,
+    limit: usize,
+) -> Result<Vec<(String, i64)>, Error> {
+    let id = gix::ObjectId::from_hex(tip.as_bytes())
+        .map_err(|e| Error::Git(format!("bad sha '{tip}': {e}")))?;
+    let walk = bare
+        .rev_walk([id])
+        .first_parent_only()
+        .all()
+        .map_err(|e| Error::Git(e.to_string()))?;
+    let mut out = Vec::new();
+    for info in walk.take(limit) {
+        let info = info.map_err(|e| Error::Git(e.to_string()))?;
+        let commit = info.object().map_err(|e| Error::Git(e.to_string()))?;
+        let time = commit.time().map_err(|e| Error::Git(e.to_string()))?;
+        out.push((info.id.to_string(), time.seconds));
+    }
+    Ok(out)
 }
 
 /// Bytes/files written by a checkout — free from gix's own accounting.

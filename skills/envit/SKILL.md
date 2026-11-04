@@ -38,7 +38,7 @@ If `.envit/repos/` is missing but `envit.json` exists, run `envit sync`.
 | `envit sync --offline` | Never touch the network; link only what the store already has. |
 | `envit add <source> [--ref R] [--name N]` | Declare a new repo. `github:owner/repo`, other forge shorthands, or any https git URL. Omit `--ref` to track the default branch. Does not sync. |
 | `envit remove <name>` | Remove a declaration. |
-| `envit update [name…]` | Deliberately move branch-tracking repos, skills, and agents to current remote heads. Prints `old → new`. |
+| `envit update [name…]` | Deliberately move branch-tracking repos, skills, and agents to current remote heads. Prints `old → new`. A skill or agent tip younger than `minAge` prints `held` and locks an older commit instead. |
 | `envit pin <name>` | Freeze a repo at its currently locked commit. |
 | `envit unpin <name>` | Resume tracking its original ref. |
 | `envit status` | Per repo: ref, locked commit, link health, policy/staleness. Never touches the network. |
@@ -48,7 +48,8 @@ If `.envit/repos/` is missing but `envit.json` exists, run `envit sync`.
 
 Env vars: `ENVIT_HOME` (store location, default `~/.envit`),
 `ENVIT_NO_REFRESH=1` (block all implicit refresh),
-`ENVIT_REFRESH_TTL` (e.g. `"1h"`, global staleness window).
+`ENVIT_REFRESH_TTL` (e.g. `"1h"`, global staleness window),
+`ENVIT_MIN_AGE` (overrides every `minAge`; `0s` accepts a fresh commit).
 
 ## Manifest format (`envit.json`)
 
@@ -133,8 +134,8 @@ fails instead of silently omitting it.
 
 Repo and skill per-entry options include `source`, `name`, `ref`, `update`
 (`auto`/`manual`/`frozen`), `ttl` (e.g. `"1h"`), and `history` (`"full"`).
-Skill entries may also use `includeAgents: true`. Top-level agent entries accept
-`path`, `ref`, and optional `update: "frozen"`; they stay at their locked commit
+Skill entries may also use `includeAgents: true` and `minAge`. Top-level agent entries accept
+`path`, `ref`, `minAge`, and optional `update: "frozen"`; they stay at their locked commit
 on ordinary sync and advance only with `envit update <source>`. `auto`, `manual`,
 and `ttl` are not agent options. Agent installation fails rather than following
 a symlinked destination directory, preventing project entries from writing into
@@ -165,6 +166,10 @@ knows to unpin later.
 newer code): `envit update <name>`. Never assume freshness — `envit
 status` shows what's pinned and when remotes were last checked.
 
+**An urgent upstream fix is `held`**: run
+`ENVIT_MIN_AGE=0s envit update <source>` once. Tell the user you bypassed
+the minimum age, and for which source.
+
 **Bootstrapping a fresh checkout or sandbox**: `envit sync --frozen`
 gives bit-identical context to the committed lockfile. This is the only
 sync mode CI and cloud environments should use.
@@ -184,6 +189,17 @@ canonically.
   to different commits coexist and nothing changes behind a project's
   back. Refreshes swap the symlink atomically.
 - envit runs no daemons; nothing happens between invocations.
+- **Minimum age.** A skill or agent source adopts a new commit only when
+  its committer date is at least 24h old. Set `"minAge"` (`90s`/`30m`/`6h`/`7d`)
+  per source or at the top level; `ENVIT_MIN_AGE` beats both. A bad
+  manifest value is an error. A branch falls back to the newest old-enough
+  commit and prints `held … → <sha> (age)`; if none is newer than the lock,
+  it prints `held … → kept <sha> (lock)` and never moves backward. A too-new
+  tag, or a first add with nothing old enough, fails and names
+  `ENVIT_MIN_AGE=0s`. 40-hex SHA refs, repos, and already-locked commits
+  (`sync`, `--frozen`, `--offline`) are never gated. `envit status` prints a
+  `note` while `ENVIT_MIN_AGE` is set. Committer dates can be backdated, so
+  the gate delays honest releases; it does not prove a commit's age.
 
 If the `envit` binary is not on PATH, ask the user how it is installed in
 this environment (in envit's own development repo it is

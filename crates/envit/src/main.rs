@@ -172,6 +172,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     repos: Vec::new(),
                     skills: Vec::new(),
                     agents: Vec::new(),
+                    held: Vec::new(),
                 },
                 Err(e) => return Err(clone_err(e)),
             };
@@ -218,6 +219,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     agent.target.as_str()
                 );
             }
+            print_held(&report.held);
             // Global scope: always when -g; otherwise piggyback when the
             // global manifest exists. Every action printed, labeled.
             let mut global_count = 0;
@@ -231,6 +233,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                         s.source
                     );
                 }
+                print_held(&greport.held);
                 global_count = greport.skills.len();
             }
             let mut notes = String::new();
@@ -282,6 +285,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     agent.target.as_str()
                 );
             }
+            print_held(&report.held);
             let mut moved = 0;
             for r in &report.repos {
                 let short = |s: &str| s[..12.min(s.len())].to_string();
@@ -325,7 +329,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
             let lock = lockfile::Lockfile::load(&root)?.unwrap_or_default();
             let entries = manifest.agent_entries()?;
             let included_skills: Vec<_> = manifest
-                .skill_entries()
+                .skill_entries()?
                 .into_iter()
                 .filter(|entry| entry.include_agents)
                 .collect();
@@ -396,7 +400,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
              -> Result<(), envit_core::Error> {
                 let m = Manifest::load(root)?;
                 let lock = lockfile::Lockfile::load(root)?.unwrap_or_default();
-                for e in m.skill_entries() {
+                for e in m.skill_entries()? {
                     let commit = lock
                         .get_skill_source(&e.source)
                         .map(|l| l.commit[..12.min(l.commit.len())].to_string())
@@ -494,6 +498,7 @@ fn run(cli: Cli) -> Result<(), envit_core::Error> {
                     health
                 );
             }
+            print_min_age_override();
         }
     }
     Ok(())
@@ -506,6 +511,37 @@ fn clone_err(e: &envit_core::Error) -> envit_core::Error {
     match e {
         envit_core::Error::ManifestNotFound(p) => envit_core::Error::ManifestNotFound(p.clone()),
         _ => envit_core::Error::ManifestNotFound(std::path::PathBuf::new()),
+    }
+}
+
+/// `ENVIT_MIN_AGE` beats every manifest `minAge`; say so while it is set.
+fn print_min_age_override() {
+    if let Some((v, _)) = sync::min_age_override() {
+        println!("note     {}={v} overrides minAge", ident::MIN_AGE_ENV);
+    }
+}
+
+/// One line per source whose fresh tip was skipped for an older commit.
+fn print_held(held: &[sync::Held]) {
+    if !held.is_empty() {
+        print_min_age_override();
+    }
+    let short = |s: &str| s[..8.min(s.len())].to_string();
+    let age = |t: i64| sync::age_label(sync::commit_age(t));
+    for h in held {
+        let chosen = if h.kept {
+            format!("kept {} (lock)", short(&h.chosen))
+        } else {
+            format!("{} ({})", short(&h.chosen), age(h.chosen_time))
+        };
+        println!(
+            "held     {}:{}  tip {} ({}) < minAge {} → {chosen}",
+            h.section,
+            h.source,
+            short(&h.tip),
+            age(h.tip_time),
+            sync::age_label(h.min_age),
+        );
     }
 }
 

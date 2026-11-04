@@ -106,6 +106,12 @@ where they are. envit only manages what its file declares.
 | `envit agents` | declared project agents, format, targets, and locked source. |
 | `envit gc` | delete checkouts no project references. `--dry-run` first. |
 
+New skill and agent commits must be at least 24 h old (committer date)
+before envit adopts them; `update` prints `held` when it locks an older one.
+Set `"minAge"` per source or at the top level, or run
+`ENVIT_MIN_AGE=0s envit update <source>` to take a fresh fix. Committer
+dates can be backdated, so this delays honest releases and proves nothing.
+
 Per-skill invocation control: `{ "name": "grill-me", "modelInvocable": false }`
 in a pick list rewrites both Claude's `disable-model-invocation` and Codex's
 `allow_implicit_invocation`, regardless of what the author set.

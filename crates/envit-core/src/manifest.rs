@@ -77,6 +77,8 @@ pub struct SkillEntry {
     pub ttl: Option<std::time::Duration>,
     /// Include portable agent definitions associated with each selected skill.
     pub include_agents: bool,
+    /// `"minAge"`: how old a new commit must be before this source adopts it.
+    pub min_age: Option<std::time::Duration>,
 }
 
 /// A harness that can discover an installed project agent.
@@ -155,6 +157,8 @@ pub struct AgentEntry {
     /// Subdirectory of the source repo containing the definitions.
     pub path: Option<String>,
     pub frozen: bool,
+    /// `"minAge"`: how old a new commit must be before this source adopts it.
+    pub min_age: Option<std::time::Duration>,
 }
 
 /// Input for `add_repo`. `name` defaults to the repo name from the source.
@@ -204,6 +208,11 @@ impl Manifest {
         &self.path
     }
 
+    /// Top-level `"minAge"`: the default for every skill and agent source.
+    pub fn min_age(&self) -> Result<Option<std::time::Duration>, Error> {
+        parse_min_age(self.doc.get("minAge"), "minAge")
+    }
+
     /// `"agentsMd": false` disables the note envit keeps in AGENTS.md / CLAUDE.md.
     pub fn agents_md_enabled(&self) -> bool {
         self.doc
@@ -226,9 +235,9 @@ impl Manifest {
 
     /// All declared skills sources (the `skills` object, keyed by source).
     /// Pick lists accept strings or `{ "name": ..., "invocation": ... }`.
-    pub fn skill_entries(&self) -> Vec<SkillEntry> {
+    pub fn skill_entries(&self) -> Result<Vec<SkillEntry>, Error> {
         let Some(obj) = self.doc.get("skills").and_then(Value::as_object) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let mut out = Vec::new();
         for (src, v) in obj {
@@ -244,6 +253,7 @@ impl Manifest {
                     manual: false,
                     ttl: None,
                     include_agents: false,
+                    min_age: None,
                 },
                 Value::String(s) => SkillEntry {
                     source,
@@ -258,6 +268,7 @@ impl Manifest {
                     manual: false,
                     ttl: None,
                     include_agents: false,
+                    min_age: None,
                 },
                 Value::Array(a) => SkillEntry {
                     source,
@@ -269,6 +280,7 @@ impl Manifest {
                     manual: false,
                     ttl: None,
                     include_agents: false,
+                    min_age: None,
                 },
                 Value::Object(o) => {
                     let pick = match o.get("pick") {
@@ -296,13 +308,14 @@ impl Manifest {
                             .get("includeAgents")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
+                        min_age: parse_min_age(o.get("minAge"), &format!("skills.{src}.minAge"))?,
                     }
                 }
                 _ => continue,
             };
             out.push(entry);
         }
-        out
+        Ok(out)
     }
 
     /// All declared agent sources. Agent entries require explicit format,
@@ -327,7 +340,7 @@ impl Manifest {
             for key in o.keys() {
                 if !matches!(
                     key.as_str(),
-                    "pick" | "format" | "targets" | "path" | "ref" | "update"
+                    "pick" | "format" | "targets" | "path" | "ref" | "update" | "minAge"
                 ) {
                     return Err(Error::ManifestShape(format!(
                         "unknown field 'agents.{src}.{key}'"
@@ -406,6 +419,7 @@ impl Manifest {
                 git_ref,
                 path,
                 frozen: update == Some("frozen"),
+                min_age: parse_min_age(o.get("minAge"), &format!("agents.{src}.minAge"))?,
             });
         }
         Ok(out)
@@ -549,6 +563,19 @@ impl Manifest {
         text.push('\n');
         std::fs::write(&self.path, text)?;
         Ok(())
+    }
+}
+
+/// A `minAge` value. Unlike `ttl`, a bad value is an error: silently
+/// ignoring a typo would weaken the gate.
+fn parse_min_age(v: Option<&Value>, at: &str) -> Result<Option<std::time::Duration>, Error> {
+    match v {
+        None => Ok(None),
+        Some(v) => v.as_str().and_then(parse_ttl).map(Some).ok_or_else(|| {
+            Error::ManifestShape(format!(
+                "'{at}' must be a duration like \"30m\", \"24h\" or \"7d\", got {v}"
+            ))
+        }),
     }
 }
 
