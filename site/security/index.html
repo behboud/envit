@@ -106,7 +106,7 @@
   <h2 id="skills">Skills are instructions</h2>
 
   <p>A skill is text an agent will follow. Treat a skills source like a
-  dependency that can run code. envit gives you three controls.</p>
+  dependency that can run code. envit gives you four controls.</p>
 
   <ul>
     <li><b>Pinned.</b> Every skill is materialized at the commit in
@@ -117,7 +117,17 @@
     the reviewed commits on any machine, or fails.</li>
     <li><b>Selective.</b> You name each skill you take from a source.
     Nothing else from that repo lands where agents look.</li>
+    <li><b>Delayed.</b> A skill or agent source adopts a new commit only
+    when its committer date is at least 24 h old (<code>"minAge"</code>
+    per source or top-level). A branch falls back to the newest
+    old-enough commit and never moves behind the lock; a too-new tag
+    fails. <code>ENVIT_MIN_AGE=0s</code> bypasses it for one run. Locked
+    commits and exact-SHA refs are not re-checked.</li>
   </ul>
+
+  <p>The delay has a limit. Anyone who can push can backdate a committer
+  date. The gate holds back honest releases long enough for others to
+  catch a bad one. It proves nothing about a commit's real age.</p>
 
   <p>Read a skills source before you add it. Set
   <code>"update": "frozen"</code> on it if you want no drift.</p>

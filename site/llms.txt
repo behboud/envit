@@ -90,12 +90,19 @@ Skill values: one skill name, a list of names, `"*"` for every skill the
 repo ships, or an object with `pick` plus options. envit discovers skills
 at the source root, under `skills/`, and under
 `plugins/<plugin>/skills/`. Skill source keys: `pick`, `ref`, `path` (a
-subdirectory, for monorepos), `update`, `ttl`, `modelInvocable`. A pick
+subdirectory, for monorepos), `update`, `ttl`, `modelInvocable`,
+`minAge`. A pick
 list item can be an object:
 `{ "name": "grill-me", "modelInvocable": false }`.
 
 Top-level keys: `repos`, `skills`, `agentsMd` (set `false` to stop envit
-from writing a note into the project's AGENTS.md or CLAUDE.md).
+from writing a note into the project's AGENTS.md or CLAUDE.md), `minAge`.
+
+envit adopts a new skill commit only when its committer date is at least
+`minAge` old (default `"24h"`). `envit update` prints `held` when it locks
+an older commit. `ENVIT_MIN_AGE=0s` accepts a fresh commit for one run.
+Committer dates can be backdated, so this delays releases and proves
+nothing about age.
 
 Two scopes. The project manifest is `envit.json` in the project root,
 committed to git. The global manifest is `~/.envit/envit.json`; it is

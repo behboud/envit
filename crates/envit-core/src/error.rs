@@ -102,6 +102,19 @@ pub enum Error {
     #[error("the global manifest is skills-only — agents are project-scope (remove `agents` from {})", .0.display())]
     GlobalAgents(std::path::PathBuf),
 
+    #[error(
+        "{from}: no commit on '{rref}' is older than {min_age} (tip {tip} is {age} old); wait, or run with {}=0s to accept it",
+        crate::ident::MIN_AGE_ENV
+    )]
+    TooNew {
+        /// `section:source`, as in other per-source errors.
+        from: String,
+        rref: String,
+        tip: String,
+        age: String,
+        min_age: String,
+    },
+
     #[error("no global manifest — create one with `envit init -g` (it lives at {})", .0.display())]
     NoGlobalManifest(std::path::PathBuf),
 }
