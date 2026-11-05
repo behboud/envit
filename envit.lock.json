@@ -11,13 +11,13 @@
       "name": "cargo",
       "source": "https://github.com/rust-lang/cargo.git",
       "ref": "HEAD",
-      "commit": "ed4cb4fe45e6268fbb9bfbecfb207d98321019a0"
+      "commit": "46a44395eb1a8ac7c383f975a41e36148d04a7ef"
     },
     {
       "name": "clap",
       "source": "https://github.com/clap-rs/clap.git",
       "ref": "HEAD",
-      "commit": "6982fb1c98c7247e38a6d4f04191b94e30497e7b"
+      "commit": "ec93e71255c0b833a34f50662a3fdb22f53f6ded"
     },
     {
       "name": "fd-lock",
@@ -35,37 +35,53 @@
       "name": "gitoxide",
       "source": "https://github.com/GitoxideLabs/gitoxide.git",
       "ref": "HEAD",
-      "commit": "fbebed746e296be64d5607e0a75b5a4e08cf4413"
+      "commit": "ea52f2a0a5e8528fb098d4ca52525d5b6672a60e"
     },
     {
       "name": "junction",
       "source": "https://github.com/tesuji/junction.git",
       "ref": "HEAD",
-      "commit": "8120513d461b5a5032a93b1808bbe922686ebb00"
+      "commit": "3b2af8d09d49e582b9d93a408bc1ab086e14ae98"
     },
     {
       "name": "mise",
       "source": "https://github.com/jdx/mise.git",
       "ref": "HEAD",
-      "commit": "62476b46eea639f4bd91a26ca897cbe94866f708"
+      "commit": "de334c3c28de3c4d14b7b471d2b2d97896492a6f"
     },
     {
       "name": "reflink-copy",
       "source": "https://github.com/cargo-bins/reflink-copy.git",
       "ref": "HEAD",
-      "commit": "eb46449f935d2455a036c5ccd36d39ab95c30d4e"
+      "commit": "bdfb506b01eed506a87a267c0912ce3030a7efec"
     },
     {
       "name": "toml",
       "source": "https://github.com/toml-rs/toml.git",
       "ref": "HEAD",
-      "commit": "f42dcad6146460b98b4dd74faaa12a7b33f6a41e"
+      "commit": "22ef745e668f5a6d25ca3d56063e7408aff73755"
     },
     {
       "name": "uv",
       "source": "https://github.com/astral-sh/uv.git",
       "ref": "HEAD",
-      "commit": "26a9dd4b2125bc271b47855e1fa0c49af3365db5"
+      "commit": "33f003cb85d73fe2aad0079f532ff019540d72e9"
+    }
+  ],
+  "skillSources": [
+    {
+      "name": "humanlayer/skills",
+      "source": "https://github.com/humanlayer/skills.git",
+      "ref": "HEAD",
+      "commit": "4d69d20f6e9b57b4fcf0d501ccfb1be961f0f329"
+    }
+  ],
+  "agentSources": [
+    {
+      "name": "humanlayer/skills",
+      "source": "https://github.com/humanlayer/skills.git",
+      "ref": "HEAD",
+      "commit": "4d69d20f6e9b57b4fcf0d501ccfb1be961f0f329"
     }
   ]
 }

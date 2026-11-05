@@ -11,5 +11,8 @@
     "jdx/mise",
     "clap-rs/clap",
     "agentskills/agentskills"
-  ]
+  ],
+  "skills": {
+    "humanlayer/skills": {"pick": ["show-me", "rpi"], "includeAgents": true}
+  }
 }
